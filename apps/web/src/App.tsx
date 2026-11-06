@@ -333,7 +333,7 @@ export default function App() {
     const anchor=visible.findIndex(event=>!!event.mapSnapshot);
     if(anchor<0)return null;
     const base=visible[anchor].mapSnapshot as ReplayMapSnapshot;
-    const map:ReplayMapSnapshot={boardSize:base.boardSize,obstacles:base.obstacles.map(([x,y])=>[x,y]),players:base.players.map(player=>({...player}))};
+    const map:ReplayMapSnapshot={boardSize:base.boardSize,obstacles:base.obstacles.map(([x,y]):[number,number]=>[x,y]),players:base.players.map(player=>({...player}))};
     for(const event of visible.slice(anchor)){
       if(event.type==="move"&&event.actorId&&event.x!==undefined&&event.y!==undefined){
         const player=map.players.find(item=>item.id===event.actorId);
@@ -349,7 +349,7 @@ export default function App() {
     return map;
   },[replayEvents,replayIndex]);
   const replayObstacles=useMemo(()=>new Set(replayMap?.obstacles.map(([x,y])=>x+","+y)||[]),[replayMap]);
-  const replayOccupants=useMemo(()=>new Map((replayMap?.players||[]).filter(player=>player.x!==null&&player.y!==null).map(player=>[player.x+","+player.y,player])),[replayMap]);
+  const replayOccupants=useMemo(()=>new Map((replayMap?.players||[]).filter(player=>player.x!==null&&player.y!==null).map(player=>[player.x+","+player.y,player] as const)),[replayMap]);
   const selectedMoveCost=selectedMove&&game&&session?estimateMoveCost(game,session.playerId,selectedMove.x,selectedMove.y):null;
   const handleTileClick=(x:number,y:number)=>{
     const occupant=occupants.get(x+","+y);
@@ -495,7 +495,7 @@ export default function App() {
             const x=i%game.boardSize,y=Math.floor(i/game.boardSize),p=occupants.get(x+","+y),rock=obstacles.has(x+","+y);
             const inMyRange=me?.x!==null&&me?.x!==undefined&&me?.y!==null&&me?.y!==undefined&&Math.max(Math.abs(x-me.x),Math.abs(y-me.y))<=game.me.range;
             return <button key={x+"-"+y} className={"tile "+(inMyRange?"range-tile ":"outside-range-tile ")+(rock?"rock-tile ":"")+(p?"occupied ":"")+(p?.id===session.playerId?"self-tile ":"")+(p?.id===selectedId?"selected ":"")+(selectedMove?.x===x&&selectedMove?.y===y?"selected-move":"")} title={p?p.name+" · "+p.hp+" HP":rock?"Obstacle":canAct?"Tile "+(x+1)+", "+(y+1)+(selectedMove?.x===x&&selectedMove?.y===y?" · selected destination · "+selectedMove.cost+" AP":" · click to select"):"Tile "+(x+1)+", "+(y+1)} onClick={()=>handleTileClick(x,y)}>
-              {rock?<span className="rock">◆</span>:p?<><span className="tank" style={{color:p.color}}>{p.alive?"▰":"✕"}</span>{(labels[p.id]==="ally"||labels[p.id]==="enemy")&&<span className={"tank-label-dot "+labels[p.id]}/ >}{game.boardSize<=20&&<span className="tile-label">{p.name.slice(0,6)}</span>}</>:null}
+              {rock?<span className="rock">◆</span>:p?<><span className="tank" style={{color:p.color}}>{p.alive?"▰":"✕"}</span>{(labels[p.id]==="ally"||labels[p.id]==="enemy")&&<span className={"tank-label-dot "+labels[p.id]}/>}{game.boardSize<=20&&<span className="tile-label">{p.name.slice(0,6)}</span>}</>:null}
             </button>;
           })}</div></div>
           <div className="map-help"><span><Move size={14}/> Click a destination to outline it, then click it again to review the AP cost.</span><span>8 directions</span></div>

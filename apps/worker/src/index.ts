@@ -206,7 +206,7 @@ export class GameRoom {
   private captureReplayMap(game:GameState):ReplayMapSnapshot {
     return {
       boardSize:game.boardSize,
-      obstacles:game.obstacles.map(([x,y])=>[x,y]),
+      obstacles:game.obstacles.map(([x,y]):[number,number]=>[x,y]),
       players:game.players.map(({id,name,color,x,y,alive})=>({id,name,color,x,y,alive})),
     };
   }
@@ -229,7 +229,7 @@ export class GameRoom {
     if(!start?.mapSnapshot)return undefined;
     const snapshot:ReplayMapSnapshot={
       boardSize:start.mapSnapshot.boardSize,
-      obstacles:start.mapSnapshot.obstacles.map(([x,y])=>[x,y]),
+      obstacles:start.mapSnapshot.obstacles.map(([x,y]):[number,number]=>[x,y]),
       players:start.mapSnapshot.players.map(player=>({...player})),
     };
     for(const event of game.events){
