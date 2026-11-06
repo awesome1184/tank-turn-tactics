@@ -79,6 +79,7 @@ export default function App() {
   const [landingPhase, setLandingPhase] = useState<"loading" | "lobby" | "active" | "ended" | "unknown">("loading");
   const [landingPlayerCount, setLandingPlayerCount] = useState(0);
   const [endingPublicMatch, setEndingPublicMatch] = useState(false);
+  const [resettingPublicMatch, setResettingPublicMatch] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const notesDirtyRef = useRef(false);
   const notesDraftRef = useRef("");
@@ -221,6 +222,21 @@ export default function App() {
       setEndingPublicMatch(false);
     }
   };
+  const resetPublicMatch = async () => {
+    if (resettingPublicMatch || !window.confirm("Reset the ended match to the lobby? This resets everyone's tank stats and clears private notes and match history, but keeps player accounts and tank colors.")) return;
+    setResettingPublicMatch(true);
+    setError("");
+    try {
+      const result = await api("/api/game/reset", {});
+      if (!result.reset) throw new Error(result.error || "The match could not be reset.");
+      setLandingPhase("lobby");
+      setLandingPlayerCount(typeof result.players === "number" ? result.players : landingPlayerCount);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not reset the shared match.");
+    } finally {
+      setResettingPublicMatch(false);
+    }
+  };
   const recoveryKey = session ? makeRecoveryKey(session) : "";
   const downloadRecoveryKey = () => {
     if (!session) return;
@@ -297,11 +313,17 @@ export default function App() {
             {landingPhase === "active" ? "The shared match is underway" : landingPhase === "ended" ? "The shared match has ended" : landingPhase === "lobby" ? "The shared match is waiting in the lobby" : landingPhase === "loading" ? "Checking shared match…" : "Shared match status unavailable"}
           </b>
           <small style={{ display: "block", color: "#d7adb1", fontSize: 10, lineHeight: 1.5, marginTop: 5 }}>
-            {landingPhase === "active" ? landingPlayerCount + " players are in this playtest. Anyone can end the match here." : landingPhase === "ended" ? "The host must reset the match before new players can join." : landingPhase === "lobby" ? "No active match needs to be ended." : "The end-game control remains available for this playtest."}
+            {landingPhase === "active" ? landingPlayerCount + " players are in this playtest. Anyone can end the match here." : landingPhase === "ended" ? "Anyone can reset the playtest to the lobby so new players can join. Existing player accounts and tank colors are kept; tank stats, private notes, and match history are reset." : landingPhase === "lobby" ? "The shared lobby is open for players to join." : landingPhase === "loading" ? "Checking the shared match…" : "The public playtest controls are available here."}
           </small>
-          <button className="danger-button" style={{ width: "100%", justifyContent: "center", marginTop: 12 }} disabled={endingPublicMatch || landingPhase === "loading" || landingPhase === "lobby" || landingPhase === "ended"} onClick={endPublicMatch}>
-            {endingPublicMatch ? "Ending match…" : landingPhase === "ended" ? "Match already ended" : landingPhase === "lobby" ? "No active game to end" : landingPhase === "loading" ? "Checking match…" : "End active game"} <Shield size={16}/>
-          </button>
+          {landingPhase === "ended" ? (
+            <button className="danger-button" style={{ width: "100%", justifyContent: "center", marginTop: 12 }} disabled={resettingPublicMatch} onClick={resetPublicMatch}>
+              {resettingPublicMatch ? "Resetting match…" : "Reset shared match"} <RefreshCw size={16}/>
+            </button>
+          ) : (
+            <button className="danger-button" style={{ width: "100%", justifyContent: "center", marginTop: 12 }} disabled={endingPublicMatch || landingPhase !== "active"} onClick={endPublicMatch}>
+              {endingPublicMatch ? "Ending match…" : landingPhase === "active" ? "End active game" : landingPhase === "loading" ? "Checking match…" : "No active game to end"} <Shield size={16}/>
+            </button>
+          )}
         </div>
         <div className="card-foot"><KeyRound size={14}/> Recovery keys are private. Anyone holding one can control that player.</div>
       </section>
