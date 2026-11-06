@@ -415,7 +415,8 @@ export class GameRoom {
       players: game.players.map(({ id, name, hp, range, x, y, alive, host, online }) => ({
         id, name, hp, range, x, y, alive, host, online,
       })),
-      jury: { memberCount: game.players.filter((p) => !p.alive).length, cycleEndsAt: game.juryCycleEndsAt },\n      me: { id: player.id, ap: player.ap, nextApAt: player.nextApAt, isJuryMember: !player.alive, hasVoted: !!game.juryVotes[player.id] },
+      jury: { memberCount: game.players.filter((p) => !p.alive).length, cycleEndsAt: game.juryCycleEndsAt },
+      me: { id: player.id, ap: player.ap, nextApAt: player.nextApAt, isJuryMember: !player.alive, hasVoted: !!game.juryVotes[player.id] },
     };
   }
 
