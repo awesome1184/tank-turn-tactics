@@ -44,7 +44,8 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [labels, setLabels] = useState<Labels>({});
   const [chatText, setChatText] = useState("");
-  const [giftAmount, setGiftAmount] = useState(1);\n  const [juryTarget, setJuryTarget] = useState("");
+  const [giftAmount, setGiftAmount] = useState(1);
+  const [juryTarget, setJuryTarget] = useState("");
   const [now, setNow] = useState(Date.now());
   const socketRef = useRef<WebSocket | null>(null);
 
@@ -121,7 +122,9 @@ export default function App() {
     setLabels(next);
     if (session) localStorage.setItem("tank-turn-tactics-labels-" + session.code, JSON.stringify(next));
   };
-  const sendChat = () => { if (chatText.trim()) { send({ type: "chat", text: chatText }); setChatText(""); } };\n  const juryCandidates = game?.players.filter((p) => p.alive) || [];\n  const effectiveJuryTarget = juryCandidates.some((p) => p.id === juryTarget) ? juryTarget : (juryCandidates[0]?.id || "");
+  const sendChat = () => { if (chatText.trim()) { send({ type: "chat", text: chatText }); setChatText(""); } };
+  const juryCandidates = game?.players.filter((p) => p.alive) || [];
+  const effectiveJuryTarget = juryCandidates.some((p) => p.id === juryTarget) ? juryTarget : (juryCandidates[0]?.id || "");
 
   if (!session) return <div className="landing">
     <header className="brand"><div className="brand-icon"><Shield/></div><div><b>TANK TURN TACTICS</b><small>A long game of short decisions</small></div></header>
