@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpRight, BatteryCharging, ChevronRight, Copy, Crosshair, Heart, MessageCircle, Move, RefreshCw, Shield, Skull, Swords, Users, Zap } from "lucide-react";
-import { MAX_PLAYERS } from "../../../packages/shared/src/contracts";
+import { ArrowUpRight, BatteryCharging, Bug, ChevronRight, Copy, Crosshair, Download, Heart, KeyRound, MessageCircle, Move, RefreshCw, Shield, Skull, Swords, Users, Zap } from "lucide-react";
+import { MAP_SIZES, MAX_PLAYERS } from "../../../packages/shared/src/contracts";
 import type { ChatMessage, PlayerLabel, PublicGameState, PublicPlayer } from "../../../packages/shared/src/contracts";
 
 const API_BASE = (import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "")).replace(/\/$/, "");
@@ -23,6 +23,29 @@ function savedSession(): Session | null {
   try { return JSON.parse(localStorage.getItem(SESSION_KEY) || "null") as Session | null; }
   catch { return null; }
 }
+function makeRecoveryKey(session: Session): string {
+  const payload = JSON.stringify({ version: 1, code: session.code, playerId: session.playerId, token: session.token });
+  const bytes = new TextEncoder().encode(payload);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const encoded = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return "TTT1." + encoded;
+}
+function readRecoveryKey(value: string): { code: string; playerId: string; token: string } {
+  const key = value.trim();
+  if (!key.startsWith("TTT1.") || key.length > 2048) throw new Error("Paste a valid Tank Turn Tactics recovery key.");
+  const encoded = key.slice(5).replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(encoded + "=".repeat((4 - encoded.length % 4) % 4));
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const payload = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+  if (payload.version !== 1 ||
+      typeof payload.code !== "string" || !/^[A-Z2-9]{6}$/.test(payload.code) ||
+      typeof payload.playerId !== "string" || payload.playerId.length < 8 || payload.playerId.length > 100 ||
+      typeof payload.token !== "string" || payload.token.length < 20 || payload.token.length > 256) {
+    throw new Error("That recovery key is incomplete or invalid.");
+  }
+  return { code: payload.code, playerId: payload.playerId, token: payload.token };
+}
 function readLabels(code: string): Labels {
   try { return JSON.parse(localStorage.getItem("tank-turn-tactics-labels-" + code) || "{}") as Labels; }
   catch { return {}; }
@@ -41,12 +64,16 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
-  const [mode, setMode] = useState<"create" | "join">("create");
+  const [mode, setMode] = useState<"create" | "join" | "recover">("create");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [labels, setLabels] = useState<Labels>({});
   const [chatText, setChatText] = useState("");
   const [giftAmount, setGiftAmount] = useState(1);
   const [juryTarget, setJuryTarget] = useState("");
+  const [recoveryInput, setRecoveryInput] = useState("");
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [debugHealth, setDebugHealth] = useState("Not checked");
   const [now, setNow] = useState(Date.now());
   const socketRef = useRef<WebSocket | null>(null);
 
@@ -100,7 +127,7 @@ export default function App() {
   }, []);
 
   const enter = async () => {
-    if (!name.trim() || name.trim().length > 18) return;
+    if (mode === "recover" || !name.trim() || name.trim().length > 18) return;
     setBusy(true); setError("");
     try {
       const result = mode === "create"
@@ -109,10 +136,51 @@ export default function App() {
       const next: Session = { code: result.code, playerId: result.playerId, token: result.token, name: name.trim() };
       localStorage.setItem(SESSION_KEY, JSON.stringify(next));
       setSession(next);
+      setRecoveryOpen(true);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not enter the lobby."); }
     finally { setBusy(false); }
   };
-  const leave = () => { socketRef.current?.close(); localStorage.removeItem(SESSION_KEY); setSession(null); setGame(null); setError(""); };
+  const restoreSession = async () => {
+    setBusy(true); setError("");
+    try {
+      const recovery = readRecoveryKey(recoveryInput);
+      const result = await api("/api/rooms/" + recovery.code + "/recover", { playerId: recovery.playerId, token: recovery.token });
+      const next: Session = { code: result.code, playerId: result.playerId, token: recovery.token, name: result.name };
+      localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+      setSession(next); setMode("create"); setRecoveryInput(""); setRecoveryOpen(true);
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not restore this player."); }
+    finally { setBusy(false); }
+  };
+  const leave = () => {
+    socketRef.current?.close(); localStorage.removeItem(SESSION_KEY);
+    setSession(null); setGame(null); setError(""); setRecoveryOpen(false); setDebugOpen(false);
+  };
+  const recoveryKey = session ? makeRecoveryKey(session) : "";
+  const downloadRecoveryKey = () => {
+    if (!session) return;
+    const blob = new Blob([recoveryKey + "\n"], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url; anchor.download = "tank-turn-tactics-" + session.code + "-recovery-key.txt";
+    anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const checkApiHealth = async () => {
+    setDebugHealth("Checking…");
+    try { const result = await api("/api/health"); setDebugHealth("Healthy · " + result.service); }
+    catch (e) { setDebugHealth("Failed · " + (e instanceof Error ? e.message : "Request failed")); }
+  };
+  const copyDiagnostics = async () => {
+    const report = {
+      app: "Tank Turn Tactics v0.4", apiBase: API_BASE || "not configured",
+      connection, websocketState: socketRef.current?.readyState ?? null,
+      roomCode: session?.code ?? null, phase: game?.phase ?? null,
+      playerCount: game?.players.length ?? null, boardSize: game?.boardSize ?? null,
+      apiHealth: debugHealth, lastError: error || null, timestamp: new Date().toISOString(),
+      // Recovery tokens are intentionally excluded.
+    };
+    try { await navigator.clipboard.writeText(JSON.stringify(report, null, 2)); setError("Diagnostics copied. Recovery credentials were not included."); }
+    catch { setError("Clipboard access was blocked. Try the browser's secure-site permissions."); }
+  };
   const me = game?.players.find((p) => p.id === session?.playerId);
   const target = game?.players.find((p) => p.id === selectedId);
   const canAct = game?.phase === "active" && !!me?.alive;
@@ -132,25 +200,74 @@ export default function App() {
     <main className="landing-grid">
       <section className="intro"><div className="eyebrow">PERSISTENT MULTIPLAYER STRATEGY</div><h1>Make every<br/><em>move count.</em></h1><p>Build alliances. Watch your range. Choose when to strike. Your tank earns one action point each day, so the best move is rarely the fastest one.</p><div className="features"><span><Move size={16}/> Tactical grid</span><span><Users size={16}/> Lobby codes</span><span><BatteryCharging size={16}/> Daily AP</span></div></section>
       <section className="panel join-card">
-        <div className="tabs"><button className={mode === "create" ? "active" : ""} onClick={() => setMode("create")}>Create lobby</button><button className={mode === "join" ? "active" : ""} onClick={() => setMode("join")}>Join lobby</button></div>
-        <div className="eyebrow">{mode === "create" ? "HOST A MATCH" : "ENTER A ROOM CODE"}</div><h2>{mode === "create" ? "Start a new lobby." : "Join your crew."}</h2><p>{mode === "create" ? "Create a private room and invite others with a six-character code." : "Enter the code shared by the lobby host."}</p>
-        <label>PLAYER NAME<input value={name} maxLength={18} placeholder="Choose a callsign" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && enter()}/></label>
-        {mode === "join" && <label>LOBBY CODE<input className="room-code-input" value={code} maxLength={6} placeholder="ABC123" onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z2-9]/g, ""))}/></label>}
+        <div className="tabs">
+          <button className={mode === "create" ? "active" : ""} onClick={() => setMode("create")}>Create</button>
+          <button className={mode === "join" ? "active" : ""} onClick={() => setMode("join")}>Join</button>
+          <button className={mode === "recover" ? "active" : ""} onClick={() => setMode("recover")}>Restore</button>
+        </div>
+        <div className="eyebrow">{mode === "create" ? "HOST A MATCH" : mode === "join" ? "ENTER A ROOM CODE" : "RESTORE A PLAYER"}</div>
+        <h2>{mode === "create" ? "Start a new lobby." : mode === "join" ? "Join your crew." : "Recover your save."}</h2>
+        <p>{mode === "create" ? "Create a private room and invite others with a six-character code." : mode === "join" ? "Enter the code shared by the lobby host." : "Paste the recovery key you saved earlier to reconnect to your player."}</p>
+        {mode === "recover" ? (
+          <label>RECOVERY KEY<textarea className="recovery-input" value={recoveryInput} rows={4} placeholder="TTT1.…" onChange={(e) => setRecoveryInput(e.target.value)}/></label>
+        ) : <>
+          <label>PLAYER NAME<input value={name} maxLength={18} placeholder="Choose a callsign" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && enter()}/></label>
+          {mode === "join" && <label>LOBBY CODE<input className="room-code-input" value={code} maxLength={6} placeholder="ABC123" onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z2-9]/g, ""))}/></label>}
+        </>}
         {error && <div className="error">{error}</div>}
-        <button className="primary-button" disabled={busy || !name.trim() || (mode === "join" && code.length !== 6)} onClick={enter}>{busy ? "Connecting…" : mode === "create" ? "Create lobby" : "Join lobby"}<ChevronRight size={18}/></button>
-        <div className="card-foot"><Shield size={14}/> No account required. Your reconnect key is saved in this browser.</div>
+        <button className="primary-button" disabled={busy || (mode === "recover" ? !recoveryInput.trim() : !name.trim() || (mode === "join" && code.length !== 6))} onClick={mode === "recover" ? restoreSession : enter}>
+          {busy ? "Connecting…" : mode === "create" ? "Create lobby" : mode === "join" ? "Join lobby" : "Restore player"}<ChevronRight size={18}/>
+        </button>
+        <div className="card-foot"><KeyRound size={14}/> Keep recovery keys private. Anyone holding one can control that player.</div>
       </section>
     </main><footer className="landing-foot">16 × 16 BATTLEFIELD <span>•</span> UP TO {MAX_PLAYERS} PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
   </div>;
 
   return <div className="shell">
-    <header className="topbar"><div className="brand"><div className="brand-icon"><Shield/></div><div><b>TANK TURN TACTICS</b><small>A long game of short decisions</small></div></div><div className="top-right"><span className={"connection " + connection}><i/>{connection === "online" ? "Connected" : connection === "connecting" ? "Connecting" : "Reconnecting"}</span><button className="quiet-button" onClick={leave}>Leave view</button></div></header>
+    <header className="topbar"><div className="brand"><div className="brand-icon"><Shield/></div><div><b>TANK TURN TACTICS</b><small>A long game of short decisions</small></div></div><div className="top-right"><span className={"connection " + connection}><i/>{connection === "online" ? "Connected" : connection === "connecting" ? "Connecting" : "Reconnecting"}</span><button className="quiet-button" onClick={() => { setRecoveryOpen(!recoveryOpen); setDebugOpen(false); }}><KeyRound size={14}/> Save key</button><button className="quiet-button" onClick={() => { setDebugOpen(!debugOpen); setRecoveryOpen(false); }}><Bug size={14}/> Debug</button><button className="quiet-button" onClick={leave}>Leave view</button></div></header>
+    {recoveryOpen && <section className="panel utility-panel recovery-panel">
+      <div className="section-title"><div><div className="eyebrow">PLAYER BACKUP</div><h2>Recovery key</h2></div><button className="quiet-button" onClick={() => setRecoveryOpen(false)}>Close</button></div>
+      <p>Save this private key somewhere safe. It restores this exact player and server-saved game state on another browser. Anyone holding it can take over the player.</p>
+      <textarea readOnly rows={3} value={recoveryKey} aria-label="Your recovery key"/>
+      <div className="utility-actions">
+        <button className="secondary-button" onClick={() => navigator.clipboard.writeText(recoveryKey).then(() => setError("Recovery key copied."), () => setError("Clipboard blocked. Use Download key instead."))}><Copy size={14}/> Copy key</button>
+        <button className="secondary-button" onClick={downloadRecoveryKey}><Download size={14}/> Download .txt</button>
+      </div>
+    </section>}
+    {debugOpen && <section className="panel utility-panel debug-panel">
+      <div className="section-title"><div><div className="eyebrow">DEVELOPER TOOLS</div><h2>Debug menu</h2></div><button className="quiet-button" onClick={() => setDebugOpen(false)}>Close</button></div>
+      <div className="debug-grid">
+        <div><small>Connection</small><b>{connection}</b></div><div><small>Room phase</small><b>{game?.phase || "Loading"}</b></div>
+        <div><small>Players</small><b>{game?.players.length ?? "—"} / {MAX_PLAYERS}</b></div><div><small>Map</small><b>{game ? game.boardSize + " × " + game.boardSize : "—"}</b></div>
+        <div><small>WebSocket</small><b>{socketRef.current?.readyState ?? "—"}</b></div><div><small>API health</small><b>{debugHealth}</b></div>
+      </div>
+      <p className="debug-api">API: <code>{API_BASE || "not configured"}</code></p>
+      {error && <p className="debug-error">Last client message: {error}</p>}
+      <div className="utility-actions">
+        <button className="secondary-button" onClick={() => send({ type: "sync" })}>Send sync</button>
+        <button className="secondary-button" onClick={checkApiHealth}>Check API</button>
+        <button className="secondary-button" onClick={() => { socketRef.current?.close(); setConnection("connecting"); }}>Reconnect</button>
+        <button className="secondary-button" onClick={copyDiagnostics}>Copy diagnostics</button>
+      </div>
+      <details><summary>Show public room state</summary><pre>{game ? JSON.stringify({ code: game.code, phase: game.phase, boardSize: game.boardSize, players: game.players, obstacles: game.obstacles, chatCount: game.chat.length }, null, 2) : "No room state received yet."}</pre></details>
+      <small className="debug-note">Diagnostics do not include your recovery token or API credentials.</small>
+    </section>}
     {error && <div className="toast">{error}<button onClick={() => setError("")}>×</button></div>}
     {!game ? <div className="loading panel"><RefreshCw className="spin"/><h2>Reconnecting to {session.code}</h2><p>Restoring your player session.</p><button className="quiet-button" onClick={leave}>Use another lobby</button></div> :
     game.phase === "lobby" ? <main className="lobby-layout">
       <section className="panel lobby-hero"><div className="eyebrow">MATCH LOBBY · WAITING FOR PLAYERS</div><h1>Assemble your crew.</h1><p>Share the room code. Once the host starts, the battlefield is locked. Every tank starts with 3 HP, range 2, and 0 AP.</p>
         <div className="code-box"><div><small>YOUR LOBBY CODE</small><strong>{game.code}</strong></div><button className="secondary-button" onClick={() => navigator.clipboard.writeText(game.code).then(() => setError("Lobby code copied."), () => setError("Lobby code: " + game.code))}><Copy size={16}/> Copy code</button></div>
         <div className="lobby-meta"><span><Users size={16}/> {game.players.length} / {MAX_PLAYERS} players</span><span>Waiting for host</span></div>
+      </section>
+      <section className="panel lobby-settings">
+        <div className="section-title"><div><div className="eyebrow">MATCH CONFIGURATION</div><h2>Lobby settings</h2></div><small>{me?.host ? "Host controls" : "View only"}</small></div>
+        <div className="map-setting-row">
+          <div><b>Battlefield size</b><small>{Math.round(30 * (game.boardSize / 16) ** 2)} obstacles will be generated at match start</small></div>
+          {me?.host
+            ? <select aria-label="Battlefield size" value={game.boardSize} disabled={connection !== "online"} onChange={(e) => send({ type: "setMapSize", mapSize: Number(e.target.value) })}>{MAP_SIZES.map((size) => <option key={size} value={size}>{size} × {size}</option>)}</select>
+            : <strong>{game.boardSize} × {game.boardSize}</strong>}
+        </div>
+        <p className="micro-note">Only the host can change this before the match starts. The setting locks when the battlefield is deployed.</p>
       </section>
       <section className="panel lobby-roster"><div className="section-title"><div><div className="eyebrow">THE ROSTER</div><h2>Players</h2></div><small>Names are public</small></div>
         {game.players.map((p, i) => <div className="roster-row" key={p.id}><span className="roster-number">{i + 1}</span><div><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.host ? "Lobby host" : "Ready to deploy"}</small></div>{p.host && <span className="host-chip">HOST</span>}</div>)}
@@ -160,13 +277,13 @@ export default function App() {
       <Chat chat={game.chat} text={chatText} setText={setChatText} send={sendChat}/>
     </main> :
     <main className="game-main">
-      <div className="game-heading"><div><div className="eyebrow">{game.phase === "ended" ? "MATCH COMPLETE" : "LIVE MATCH"} · ROOM {game.code}</div><h1>{game.phase === "ended" ? "The dust has settled." : "Command your tank."}</h1><p>{game.phase === "ended" ? (game.players.find((p) => p.id === game.winnerId)?.name || "A player") + " is the last tank standing." : "Every move matters. Choose each action carefully."}</p></div><div className="game-pills"><span><Users size={15}/> {game.players.length} players</span><span>16 × 16 grid</span></div></div>
+      <div className="game-heading"><div><div className="eyebrow">{game.phase === "ended" ? "MATCH COMPLETE" : "LIVE MATCH"} · ROOM {game.code}</div><h1>{game.phase === "ended" ? "The dust has settled." : "Command your tank."}</h1><p>{game.phase === "ended" ? (game.players.find((p) => p.id === game.winnerId)?.name || "A player") + " is the last tank standing." : "Every move matters. Choose each action carefully."}</p></div><div className="game-pills"><span><Users size={15}/> {game.players.length} players</span><span>{game.boardSize} × {game.boardSize} grid</span></div></div>
       <div className="game-grid">
         <section className="panel map-panel"><div className="section-title"><div><div className="eyebrow">TACTICAL MAP</div><h2>Battlefield</h2></div><div className="legend"><span><i className="legend-you"/> You</span><span><i className="legend-player"/> Player</span><span><i className="legend-rock"/> Obstacle</span></div></div>
-          <div className="board-wrap"><div className="board">{Array.from({ length: game.boardSize * game.boardSize }, (_, i) => {
+          <div className="board-wrap"><div className={"board " + (game.boardSize > 20 ? "board-large" : "")} style={{ gridTemplateColumns: "repeat(" + game.boardSize + ", minmax(0, 1fr))" }}>{Array.from({ length: game.boardSize * game.boardSize }, (_, i) => {
             const x = i % game.boardSize, y = Math.floor(i / game.boardSize), p = occupants.get(x + "," + y), rock = obstacles.has(x + "," + y);
             return <button key={x + "-" + y} className={"tile " + (rock ? "rock-tile " : "") + (p ? "occupied " : "") + (p?.id === session.playerId ? "self-tile " : "") + (p?.id === selectedId ? "selected " : "") + (p && !p.alive ? "dead-tile" : "")} title={p ? p.name + " · " + p.hp + " HP" : rock ? "Obstacle" : "Tile " + (x + 1) + ", " + (y + 1)} onClick={() => p ? setSelectedId(p.id) : canAct && !rock && send({ type: "move", x, y })}>
-              {rock ? <span className="rock">◆</span> : p ? <><span className="tank">{p.alive ? "▰" : "✕"}</span><span className="tile-label">{p.name.slice(0, 6)}</span></> : null}
+              {rock ? <span className="rock">◆</span> : p ? <><span className="tank">{p.alive ? "▰" : "✕"}</span>{game.boardSize <= 20 && <span className="tile-label">{p.name.slice(0, 6)}</span>}</> : null}
             </button>;
           })}</div></div>
           <div className="map-help"><span><Move size={14}/> Click an empty tile to move (AP per step).</span><span>8 directions</span></div>
@@ -206,7 +323,7 @@ export default function App() {
       </div>
       <p className="server-note"><Shield size={14}/> Server-authoritative match · AP and actions are validated by the game server.</p>
     </main>}
-    <footer className="footer">TANK TURN TACTICS <span>·</span> v0.3</footer>
+    <footer className="footer">TANK TURN TACTICS <span>·</span> v0.4</footer>
   </div>;
 }
 

@@ -17,14 +17,14 @@ Open **Workers & Pages** and make sure your account's `workers.dev` subdomain is
 
 In Cloudflare, open **Manage Account → Account API tokens** (or **My Profile → API Tokens**, depending on the dashboard entry point), then:
 
-1. Choose **Create Token**.
-2. Choose the **Edit Cloudflare Workers** template, or a custom token with the required Workers deployment permissions.
-3. Scope it to the one Cloudflare account where the game will run.
-4. Create the token and copy it immediately.
+1. Choose **Create Token**, then use **Custom** under Permission policies.
+2. For the first deployment, grant the **Workers → Admin** role at the Workers product scope for the one account where the game will run. Cloudflare requires product-level Admin to create a Worker that does not exist yet.
+3. Create the token and copy it immediately.
+4. After the first deployment creates the Worker, you can replace this with a narrower token scoped to the individual `tank-turn-tactics-api` Worker with the **Editor** role. Update the GitHub secret with the replacement token.
 
 Keep this token private. Do not paste it into source files, chat, or the GitHub repository itself. Cloudflare's GitHub Actions guide recommends storing it as a CI/CD secret.
 
-**First deployment permission note:** the Worker does not exist in the account yet. Cloudflare's current permissions model requires Workers product-level **Admin** access to create a new Worker. Once the Worker exists, later deployments can use **Editor** access scoped to this Worker. If the first deployment reports a permissions error while creating the Worker, grant the token the required create permission for the initial deploy, then narrow it afterward.
+Cloudflare's current role model distinguishes creating a Worker from updating one: a new Worker requires Workers product-level **Admin**; deploying an existing Worker requires **Editor** access to that Worker. This lets you reduce the token's scope after the initial deploy.
 
 ## 3. Copy your Cloudflare Account ID
 
@@ -94,7 +94,7 @@ Then open **Actions → Deploy web client → Run workflow** and run it on `main
 
 ## 7. Free plan and capacity notes
 
-The Worker is configured to use SQLite-backed Durable Objects, which Cloudflare supports on both Workers Free and Paid plans. The current Free plan includes 100,000 Durable Object requests per day and 13,000 GB-seconds of compute duration per day. Incoming WebSocket messages are discounted at a 20:1 ratio for request billing; outgoing WebSocket messages are not billed as requests. Free-plan limits reset daily, and operations can fail after a limit is exceeded.
+The Worker is configured to use SQLite-backed Durable Objects, which Cloudflare supports on Workers Free and Paid plans. Current Free-plan Durable Object allowances include 100,000 requests and 13,000 GB-seconds of compute duration per day; incoming WebSocket messages use a 20:1 request-billing ratio, while outgoing WebSocket messages are not billed as requests. Limits reset daily, and operations of a type can fail after that type's free allowance is exceeded. Keep an eye on usage during larger playtests.
 
 For small playtests, start on the Free plan and watch the Worker and Durable Object metrics in Cloudflare. Upgrade only if the game's actual usage needs it. See Cloudflare's [Durable Objects pricing documentation](https://developers.cloudflare.com/durable-objects/platform/pricing/).
 

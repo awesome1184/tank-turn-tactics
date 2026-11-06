@@ -1,12 +1,13 @@
-# Tank Turn Tactics — implemented rules (v0.3)
+# Tank Turn Tactics — implemented rules (v0.4)
 
 This is the exact ruleset implemented by the current prototype. It resolves details left unspecified so the server can validate every action consistently.
 
 ## 1. Match setup
 - A lobby has a six-character code and one host. It supports 2–64 players.
 - The host starts the match; no one can join after it begins.
-- The battlefield is a 16×16 square grid. The lobby cap is 64 players; after 30 obstacles are placed, 226 unblocked tiles remain available for tank spawns.
-- At match start, the server randomly places 30 obstacles (about 12% of the map) and places each tank on a distinct, unblocked tile.
+- The battlefield is a square grid selected by the host from 16×16, 20×20, 24×24, or 32×32 during the lobby. The setting locks when the match starts.
+- The lobby cap is 64 players. Obstacle count scales with map area, maintaining approximately the same density as the original 16×16 board.
+- At match start, the server randomly places the scaled obstacle count and places each tank on a distinct, unblocked tile.
 - Every player starts with 3 hearts (HP), 0 action points (AP), and range 2.
 - There are no fixed teams. Players decide whom to cooperate with.
 
@@ -38,11 +39,12 @@ This is the exact ruleset implemented by the current prototype. It resolves deta
 - A living recipient gains 1 HP, up to 3 maximum. An eliminated recipient is revived at 1 HP with 0 AP; their next AP arrives 24 hours after revival.
 - Heart gifts do not require AP. AP gifts deduct the gifted amount from the sender's AP as described above.
 
-## 6. Names, labels, chat, and connections
+## 6. Names, labels, chat, recovery, and connections
 - Names are 1–18 characters and visible to everyone.
 - Each player may assign every other player a private label: **Ally**, **Enemy**, or **Unmarked**. Labels are stored in that player's browser and are not shared with the server. They do not create teams or change damage.
 - The room has shared chat. Messages are limited to 300 characters; the latest 50 are retained.
 - A disconnected player stays in the match. Their browser can reconnect using its saved session key.
+- Each player can export a portable recovery key from the in-game **Save key** control. On another browser, choose **Restore** on the landing screen and paste that key. The key is a bearer credential: anyone holding it can control that player, so keep it private. There are no password-based accounts yet.
 - The server is authoritative: it validates AP, pathing, range, HP, gifts, and match phase.
 
 ## 7. Jury (implemented in v0.2)

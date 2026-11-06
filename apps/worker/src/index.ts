@@ -1,5 +1,5 @@
 import {
-  BOARD_SIZE, DAILY_AP_INTERVAL_MS, MAX_CHAT_MESSAGES, MAX_HP, MAX_PLAYERS,
+  BOARD_SIZE, MAP_SIZES, DAILY_AP_INTERVAL_MS, MAX_CHAT_MESSAGES, MAX_HP, MAX_PLAYERS,
   RANGE_UPGRADE_COST, STARTING_AP, STARTING_HP, STARTING_RANGE, chebyshevDistance,
 } from "../../../packages/shared/src/contracts";
 import type { ClientAction, GameState, Player, PublicGameState } from "../../../packages/shared/src/contracts";
@@ -48,7 +48,7 @@ export default {
         }
         return cors(json({ error: "Could not reserve a lobby code. Please retry." }, 503));
       }
-      const match = url.pathname.match(/^\/api\/rooms\/([A-Z2-9]{6})(?:\/(join|ws))?$/i);
+      const match = url.pathname.match(/^\/api\/rooms\/([A-Z2-9]{6})(?:\/(join|recover|ws))?$/i);
       if (!match) return cors(json({ error: "Not found." }, 404));
       const code = match[1].toUpperCase();
       const action = match[2] || "state";
@@ -57,6 +57,12 @@ export default {
         const body = await request.json() as { name?: unknown };
         return cors(await stub.fetch("https://room.internal/join", {
           method: "POST", body: JSON.stringify({ name: cleanName(body.name) }),
+        }));
+      }
+      if (action === "recover" && request.method === "POST") {
+        const body = await request.json() as { playerId?: unknown; token?: unknown };
+        return cors(await stub.fetch("https://room.internal/recover", {
+          method: "POST", body: JSON.stringify(body),
         }));
       }
       if (action === "ws") return stub.fetch(new Request("https://room.internal/ws" + url.search, request));
@@ -88,6 +94,7 @@ export class GameRoom {
     if (path === "/ws") return this.connect(request);
     if (path === "/create" && request.method === "POST") return this.create(request);
     if (path === "/join" && request.method === "POST") return this.join(request);
+    if (path === "/recover" && request.method === "POST") return this.recover(request);
     if (path === "/state") {
       const game = await this.getGame();
       if (!game) return json({ error: "Lobby not found." }, 404);
@@ -197,6 +204,17 @@ export class GameRoom {
     return json({ code: game.code, playerId: player.id, token: player.token });
   }
 
+  private async recover(request: Request): Promise<Response> {
+    const body = await request.json() as { playerId?: unknown; token?: unknown };
+    if (typeof body.playerId !== "string" || typeof body.token !== "string") {
+      return json({ error: "That recovery key is invalid." }, 400);
+    }
+    const game = await this.getGame();
+    const player = game?.players.find((p) => p.id === body.playerId && p.token === body.token);
+    if (!game || !player) return json({ error: "That recovery key does not match a saved player." }, 403);
+    return json({ code: game.code, playerId: player.id, name: player.name });
+  }
+
   private async connect(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const playerId = url.searchParams.get("playerId") || "";
@@ -259,6 +277,14 @@ export class GameRoom {
       game.chat = game.chat.slice(-MAX_CHAT_MESSAGES);
       return;
     }
+    if (action.type === "setMapSize") {
+      if (game.phase !== "lobby") throw new Error("Map size can only be changed before the match starts.");
+      if (!actor.host) throw new Error("Only the host can change lobby settings.");
+      const requestedSize = Number(action.mapSize);
+      if (!MAP_SIZES.some((size) => size === requestedSize)) throw new Error("Choose a supported map size.");
+      game.boardSize = requestedSize;
+      return;
+    }
     if (action.type === "start") {
       if (game.phase !== "lobby") throw new Error("The match has already started.");
       if (!actor.host) throw new Error("Only the host can start the match.");
@@ -273,7 +299,7 @@ export class GameRoom {
     switch (action.type) {
       case "move": {
         const x = Number(action.x), y = Number(action.y);
-        if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= BOARD_SIZE || y >= BOARD_SIZE) throw new Error("Choose a tile on the board.");
+        if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= game.boardSize || y >= game.boardSize) throw new Error("Choose a tile on the board.");
         if (x === actor.x && y === actor.y) throw new Error("Your tank is already there.");
         const path = this.findPath(game, actor, x, y);
         if (!path || path.length < 2) throw new Error("That tile cannot be reached.");
@@ -339,15 +365,16 @@ export class GameRoom {
   private startGame(game: GameState, now: number): void {
     game.phase = "active"; game.startedAt = now; game.winnerId = null; game.juryCycleEndsAt = now + DAILY_AP_INTERVAL_MS; game.juryVotes = {};
     const occupied = new Set<string>();
-    while (game.obstacles.length < 30) {
-      const x = Math.floor(Math.random() * BOARD_SIZE), y = Math.floor(Math.random() * BOARD_SIZE);
+    const obstacleCount = Math.round(30 * (game.boardSize / BOARD_SIZE) ** 2);
+    while (game.obstacles.length < obstacleCount) {
+      const x = Math.floor(Math.random() * game.boardSize), y = Math.floor(Math.random() * game.boardSize);
       const key = x + "," + y;
       if (!occupied.has(key)) { occupied.add(key); game.obstacles.push([x, y]); }
     }
     for (const player of game.players) {
       let x = 0, y = 0, key = "";
       do {
-        x = Math.floor(Math.random() * BOARD_SIZE); y = Math.floor(Math.random() * BOARD_SIZE); key = x + "," + y;
+        x = Math.floor(Math.random() * game.boardSize); y = Math.floor(Math.random() * game.boardSize); key = x + "," + y;
       } while (occupied.has(key));
       occupied.add(key);
       player.x = x; player.y = y; player.hp = STARTING_HP; player.ap = STARTING_AP;
@@ -392,7 +419,7 @@ export class GameRoom {
       if (x === targetX && y === targetY) break;
       for (const [dx, dy] of directions) {
         const nx = x + dx, ny = y + dy, nk = key(nx, ny);
-        if (nx < 0 || ny < 0 || nx >= BOARD_SIZE || ny >= BOARD_SIZE || blocked.has(nk) || previous.has(nk)) continue;
+        if (nx < 0 || ny < 0 || nx >= game.boardSize || ny >= game.boardSize || blocked.has(nk) || previous.has(nk)) continue;
         previous.set(nk, key(x, y)); queue.push([nx, ny]);
       }
     }
