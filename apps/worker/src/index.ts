@@ -181,7 +181,7 @@ export class GameRoom {
       let message:string|null=null;
       switch(event.type){
         case "player-join": message=`${target} joined the lobby.`; break;
-        case "player-kick": message=`${actor} removed ${target} from the match.`; break;
+        case "player-kick": message=`${actor} kicked ${target}.`; break;
         case "match-start": message="The match started."; break;
         case "move": message=`${actor} moved to (${(event.x??-1)+1}, ${(event.y??-1)+1}).`; break;
         case "attack": message=event.killed?`${target} was eliminated.`:`${target} was hit.`; break;
@@ -243,7 +243,7 @@ export class GameRoom {
       let message:string|null=null;
       switch(event.type){
         case "player-join": message=`${target} joined the lobby.`; break;
-        case "player-kick": message=`${actor} removed ${target} from the match.`; break;
+        case "player-kick": message=`${actor} kicked ${target}.`; break;
         case "match-start": message="The match started."; break;
         case "move": message=`${actor} moved to (${(event.x??-1)+1}, ${(event.y??-1)+1}).`; break;
         case "attack":
