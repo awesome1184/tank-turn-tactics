@@ -49,12 +49,15 @@ export default {
         return stub.fetch(new Request("https://game.internal/ws" + url.search, request));
       }
       if (url.pathname === "/api/game/end" && request.method === "POST") {
-        // Public playtest control: anyone on the login screen can end the active shared match.
-        return cors(await stub.fetch("https://game.internal/end", { method: "POST" }));
+        // Public playtest controls: reuse the established endpoint for both end and reset.
+        const body = await request.json().catch(() => ({})) as { action?: unknown };
+        const internalUrl = new URL("https://game.internal/end");
+        if (body.action === "reset") internalUrl.searchParams.set("action", "reset");
+        return cors(await stub.fetch(internalUrl.toString(), { method: "POST" }));
       }
       if (url.pathname === "/api/game/reset" && request.method === "POST") {
-        // Public playtest control: anyone can return an ended match to the lobby.
-        return cors(await stub.fetch("https://game.internal/reset", { method: "POST" }));
+        // Backward-compatible alias for older login pages.
+        return cors(await stub.fetch("https://game.internal/end?action=reset", { method: "POST" }));
       }
       if (url.pathname === "/api/game/state" && request.method === "GET") {
         return cors(await stub.fetch("https://game.internal/state"));
@@ -93,7 +96,11 @@ export class GameRoom {
     if (path === "/join" && request.method === "POST") return this.join(request);
     if (path === "/recover" && request.method === "POST") return this.recover(request);
     if (path === "/notes" && request.method === "POST") return this.notesArchive(request);
-    if (path === "/end" && request.method === "POST") return this.endGameFromLanding();
+    if (path === "/end" && request.method === "POST") {
+      return routeUrl.searchParams.get("action") === "reset"
+        ? this.resetGameFromLanding()
+        : this.endGameFromLanding();
+    }
     if (path === "/reset" && request.method === "POST") return this.resetGameFromLanding();
     if (path === "/state") {
       const game = await this.getGame();
