@@ -225,11 +225,11 @@ export class GameRoom {
     }
     if (game.juryCycleEndsAt !== null && now >= game.juryCycleEndsAt) {
       const votesByTarget = new Map<string, number>();
-      for (const [voterId, targetId] of Object.entries(game.juryVotes)) {
+      for (const [voterId, vote] of Object.entries(game.juryVotes)) {
         const voter = game.players.find((p) => p.id === voterId);
-        const target = game.players.find((p) => p.id === targetId);
-        if (!voter || voter.alive || !target || !target.alive) continue;
-        votesByTarget.set(targetId, (votesByTarget.get(targetId) || 0) + 1);
+        const target = game.players.find((p) => p.id === vote.targetId);
+        if (vote.invalidated || !voter || voter.alive || !target || !target.alive) continue;
+        votesByTarget.set(vote.targetId, (votesByTarget.get(vote.targetId) || 0) + 1);
       }
       for (const [targetId, voteCount] of votesByTarget) {
         if (voteCount >= 3) {
@@ -318,6 +318,7 @@ export class GameRoom {
         actor.hp -= 1;
         if (!target.alive) {
           target.alive = true; target.hp = 1; target.ap = 0;
+          if (game.juryVotes[target.id]) game.juryVotes[target.id].invalidated = true;
           target.nextApAt = now + DAILY_AP_INTERVAL_MS;
         } else target.hp = Math.min(MAX_HP, target.hp + 1);
         return;
@@ -328,7 +329,7 @@ export class GameRoom {
         if (game.juryVotes[actor.id]) throw new Error("You have already cast your jury vote this cycle.");
         const target = this.target(game, actor, action.targetId);
         if (!target.alive) throw new Error("The jury can only support a living player.");
-        game.juryVotes[actor.id] = target.id;
+        game.juryVotes[actor.id] = { targetId: target.id, invalidated: false };
         return;
       }
       default: throw new Error("Unknown action.");
