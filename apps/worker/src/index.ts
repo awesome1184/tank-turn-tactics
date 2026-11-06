@@ -48,6 +48,9 @@ export default {
       if (url.pathname === "/api/game/ws") {
         return stub.fetch(new Request("https://game.internal/ws" + url.search, request));
       }
+      if (url.pathname === "/api/game/state" && url.searchParams.get("end-now") === "1" && request.method === "GET") {
+        return cors(await stub.fetch("https://game.internal/state?end-now=1"));
+      }
       if (url.pathname === "/api/game/state" && request.method === "GET") {
         return cors(await stub.fetch("https://game.internal/state"));
       }
@@ -85,7 +88,9 @@ export class GameRoom {
   }
 
   private async route(request: Request): Promise<Response> {
-    const path = new URL(request.url).pathname;
+    const routeUrl=new URL(request.url);
+    const path=routeUrl.pathname;
+    if(path==="/state"&&routeUrl.searchParams.get("end-now")==="1")return this.endCurrentGame();
     if (path === "/ws") return this.connect(request);
     if (path === "/join" && request.method === "POST") return this.join(request);
     if (path === "/recover" && request.method === "POST") return this.recover(request);

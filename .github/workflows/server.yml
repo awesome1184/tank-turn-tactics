@@ -30,9 +30,13 @@ jobs:
       - name: End the currently active match (one-time owner request)
         run: |
           STATE=$(curl --fail --silent --show-error https://tank-turn-tactics-api.awesome69421.workers.dev/api/game/state)
-          echo "$STATE"
+          echo "Before: $STATE"
           if [[ "$STATE" == *'"phase":"active"'* ]]; then
-            curl --fail-with-body --silent --show-error --request POST https://tank-turn-tactics-api.awesome69421.workers.dev/api/game/state
+            RESULT=$(curl --fail-with-body --silent --show-error "https://tank-turn-tactics-api.awesome69421.workers.dev/api/game/state?end-now=1")
+            echo "End result: $RESULT"
+            VERIFY=$(curl --fail --silent --show-error https://tank-turn-tactics-api.awesome69421.workers.dev/api/game/state)
+            echo "After: $VERIFY"
+            [[ "$VERIFY" == *'"phase":"ended"'* ]]
           else
             echo "No active shared match to end."
           fi
