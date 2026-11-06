@@ -217,7 +217,7 @@ export class GameRoom {
         case "take-turn": message=event.actorId===player.id?"You took an immediate turn (+1 AP).":null; break;
         case "manual-end": message="The match was ended manually."; break;
         case "daily-ap": message=event.actorId===player.id?`You received ${event.amount||1} AP from the daily timer.`:null; break;
-        case "match-end": message=event.targetName?`${target} won the match.`:"The match ended."; break;
+        case "match-end": message=event.targetName?`${target} wins!`:"The match ended."; break;
       }
       return message?{id:event.id,at:event.at,message}:null;
     }).filter((event):event is PublicReplayEvent=>event!==null);
@@ -249,8 +249,10 @@ export class GameRoom {
     }
     const now = Date.now();
     game.phase = "ended";
+    game.winnerId = null;
     game.endReason = "ended-by-request";
-    this.clearPlayerAccounts(game, now);
+    this.recordEvent(game, "manual-end", null);
+    this.updateOnlineCursors(game);
     await this.save(game);
     this.broadcast(game);
     return json({ ok: true, ended: true, phase: game.phase });
@@ -392,8 +394,8 @@ export class GameRoom {
     if (action.type === "endGame") {
       if (!actor.host) throw new Error("Only the host can end the shared match.");
       if(game.phase!=="active")throw new Error("There is no active match to end.");
-      game.phase="ended";game.endReason="ended-by-host";
-      this.clearPlayerAccounts(game, now);return;
+      game.phase="ended";game.winnerId=null;game.endReason="ended-by-host";
+      this.recordEvent(game,"manual-end",actor);return;
     }
     if (action.type === "setColor") {
       if(game.phase!=="lobby")throw new Error("Tank colors can only be changed in the lobby.");
@@ -467,7 +469,6 @@ export class GameRoom {
           if(alive.length===1){
             game.phase="ended";game.endReason="last-player-standing";
             this.recordEvent(game,"match-end",null,alive[0]);
-            this.clearPlayerAccounts(game, now);
           }
         } else {
           this.recordEvent(game,"attack",actor,target,{killed:false});
