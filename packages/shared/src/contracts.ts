@@ -1,5 +1,6 @@
 export const BOARD_SIZE = 16;
-export const MAX_PLAYERS = 16;
+// Keep below the 226 unblocked tiles available on the 16x16 board.
+export const MAX_PLAYERS = 64;
 export const DAILY_AP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const STARTING_HP = 3;
 export const STARTING_AP = 0;

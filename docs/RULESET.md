@@ -1,11 +1,11 @@
-# Tank Turn Tactics — implemented rules (v0.2)
+# Tank Turn Tactics — implemented rules (v0.3)
 
 This is the exact ruleset implemented by the current prototype. It resolves details left unspecified so the server can validate every action consistently.
 
 ## 1. Match setup
-- A lobby has a six-character code and one host. It supports 2–16 players.
+- A lobby has a six-character code and one host. It supports 2–64 players.
 - The host starts the match; no one can join after it begins.
-- The battlefield is a 16×16 square grid.
+- The battlefield is a 16×16 square grid. The lobby cap is 64 players; after 30 obstacles are placed, 226 unblocked tiles remain available for tank spawns.
 - At match start, the server randomly places 30 obstacles (about 12% of the map) and places each tank on a distinct, unblocked tile.
 - Every player starts with 3 hearts (HP), 0 action points (AP), and range 2.
 - There are no fixed teams. Players decide whom to cooperate with.
@@ -58,7 +58,7 @@ This is the exact ruleset implemented by the current prototype. It resolves deta
 ### Which historical jury variant is used?
 The creator's spoken explanation in the original game retrospective describes a daily secret vote to help a living player, with 3 votes granting that player an extra AP. This is the implemented rule. A separately transcribed printed rule sheet describes a different “haunted” penalty for the most-voted player. The prototype does **not** combine those conflicting variants and does not apply a haunting penalty.
 
-## 8. Not in v0.2
+## 8. Not yet implemented
 Daily map heart pickups, status text, tournament placement / negotiated placement rules, and payment/prize handling are not implemented yet.
 
 ## Why the AP timer is 24 hours

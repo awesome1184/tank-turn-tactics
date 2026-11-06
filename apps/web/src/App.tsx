@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, BatteryCharging, ChevronRight, Copy, Crosshair, Heart, MessageCircle, Move, RefreshCw, Shield, Skull, Swords, Users, Zap } from "lucide-react";
+import { MAX_PLAYERS } from "../../../packages/shared/src/contracts";
 import type { ChatMessage, PlayerLabel, PublicGameState, PublicPlayer } from "../../../packages/shared/src/contracts";
 
 const API_BASE = (import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "")).replace(/\/$/, "");
@@ -139,7 +140,7 @@ export default function App() {
         <button className="primary-button" disabled={busy || !name.trim() || (mode === "join" && code.length !== 6)} onClick={enter}>{busy ? "Connecting…" : mode === "create" ? "Create lobby" : "Join lobby"}<ChevronRight size={18}/></button>
         <div className="card-foot"><Shield size={14}/> No account required. Your reconnect key is saved in this browser.</div>
       </section>
-    </main><footer className="landing-foot">16 × 16 BATTLEFIELD <span>•</span> UP TO 16 PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
+    </main><footer className="landing-foot">16 × 16 BATTLEFIELD <span>•</span> UP TO {MAX_PLAYERS} PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
   </div>;
 
   return <div className="shell">
@@ -149,7 +150,7 @@ export default function App() {
     game.phase === "lobby" ? <main className="lobby-layout">
       <section className="panel lobby-hero"><div className="eyebrow">MATCH LOBBY · WAITING FOR PLAYERS</div><h1>Assemble your crew.</h1><p>Share the room code. Once the host starts, the battlefield is locked. Every tank starts with 3 HP, range 2, and 0 AP.</p>
         <div className="code-box"><div><small>YOUR LOBBY CODE</small><strong>{game.code}</strong></div><button className="secondary-button" onClick={() => navigator.clipboard.writeText(game.code).then(() => setError("Lobby code copied."), () => setError("Lobby code: " + game.code))}><Copy size={16}/> Copy code</button></div>
-        <div className="lobby-meta"><span><Users size={16}/> {game.players.length} / 16 players</span><span>Waiting for host</span></div>
+        <div className="lobby-meta"><span><Users size={16}/> {game.players.length} / {MAX_PLAYERS} players</span><span>Waiting for host</span></div>
       </section>
       <section className="panel lobby-roster"><div className="section-title"><div><div className="eyebrow">THE ROSTER</div><h2>Players</h2></div><small>Names are public</small></div>
         {game.players.map((p, i) => <div className="roster-row" key={p.id}><span className="roster-number">{i + 1}</span><div><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.host ? "Lobby host" : "Ready to deploy"}</small></div>{p.host && <span className="host-chip">HOST</span>}</div>)}
@@ -205,7 +206,7 @@ export default function App() {
       </div>
       <p className="server-note"><Shield size={14}/> Server-authoritative match · AP and actions are validated by the game server.</p>
     </main>}
-    <footer className="footer">TANK TURN TACTICS <span>·</span> v0.1 prototype</footer>
+    <footer className="footer">TANK TURN TACTICS <span>·</span> v0.3</footer>
   </div>;
 }
 
