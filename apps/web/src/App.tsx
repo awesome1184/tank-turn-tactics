@@ -3,7 +3,7 @@ import { ArrowUpRight, BatteryCharging, Bug, ChevronRight, Copy, Crosshair, Down
 import { MAP_SIZES, MAX_PLAYERS } from "../../../packages/shared/src/contracts";
 import type { ChatMessage, PlayerLabel, PublicGameState, PublicPlayer } from "../../../packages/shared/src/contracts";
 
-const API_BASE = (import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "")).replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "https://tank-turn-tactics-api.awesome69421.workers.dev")).replace(/\/$/, "");
 const SESSION_KEY = "tank-turn-tactics-session-v1";
 type Session = { code: string; playerId: string; token: string; name: string };
 type Labels = Record<string, PlayerLabel>;
@@ -220,7 +220,7 @@ export default function App() {
         </button>
         <div className="card-foot"><KeyRound size={14}/> Keep recovery keys private. Anyone holding one can control that player.</div>
       </section>
-    </main><footer className="landing-foot">16 × 16 BATTLEFIELD <span>•</span> UP TO {MAX_PLAYERS} PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
+    </main><footer className="landing-foot">16 × 16 TO 32 × 32 MAPS <span>•</span> UP TO {MAX_PLAYERS} PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
   </div>;
 
   return <div className="shell">

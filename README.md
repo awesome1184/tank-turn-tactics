@@ -9,7 +9,7 @@ A persistent browser-based multiplayer tank tactics game. The React client is ho
 - Portable player recovery keys: export a key, then restore that same player from another browser without creating an account.
 - An in-game debug panel with connection status, API health checks, manual sync/reconnect, and privacy-safe diagnostic copying.
 - Reconnectable sessions and persistent match state.
-- A 16×16 square grid with movement, attacks, HP, range upgrades, healing, AP transfers, and heart gifts/revivals.
+- Configurable square battlefields from 16×16 to 32×32, with movement, attacks, HP, range upgrades, healing, AP transfers, and heart gifts/revivals.
 - Private `Ally`, `Enemy`, and `Unmarked` labels saved in each player's browser.
 - AP totals hidden from other players.
 - One AP every 24 hours per living player, on a rolling schedule that keeps running while a player is offline.
