@@ -259,8 +259,8 @@ export class GameRoom {
   private async resetGameFromLanding(): Promise<Response> {
     const game = await this.getGame();
     if (!game) return json({ ok: false, reset: false, phase: "lobby", error: "There is no shared match to reset." }, 404);
-    if (game.phase !== "ended") {
-      return json({ ok: false, reset: false, phase: game.phase, error: "The shared match must end before it can be reset." }, 409);
+    if (game.phase === "active") {
+      return json({ ok: false, reset: false, phase: game.phase, error: "End the active match before clearing player accounts." }, 409);
     }
     const now = Date.now();
     this.resetGame(game, now);
