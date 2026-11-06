@@ -249,7 +249,7 @@ export default function App() {
     }
   };
   const resetPublicMatch = async () => {
-    if (resettingPublicMatch || !window.confirm("Open a fresh lobby? All player accounts and recovery keys from the ended match have been deleted. The first person to join the new lobby becomes host.")) return;
+    if (resettingPublicMatch || !window.confirm("Clear every existing player account and recovery key, then open an empty lobby? Everyone will be logged out. The first person to join afterwards becomes host.")) return;
     setResettingPublicMatch(true);
     setError("");
     try {
@@ -339,11 +339,11 @@ export default function App() {
             {landingPhase === "active" ? "The shared match is underway" : landingPhase === "ended" ? "The shared match has ended" : landingPhase === "lobby" ? "The shared match is waiting in the lobby" : landingPhase === "loading" ? "Checking shared match…" : "Shared match status unavailable"}
           </b>
           <small style={{ display: "block", color: "#d7adb1", fontSize: 10, lineHeight: 1.5, marginTop: 5 }}>
-            {landingPhase === "active" ? landingPlayerCount + " players are in this playtest. Anyone can end the match here." : landingPhase === "ended" ? "Anyone can reopen the playtest lobby. All player accounts and recovery keys were cleared when the match ended; the first new player to join becomes host." : landingPhase === "lobby" ? "The shared lobby is open. The first player to join becomes host." : landingPhase === "loading" ? "Checking the shared match…" : "The public playtest controls are available here."}
+            {landingPhase === "active" ? landingPlayerCount + " players are in this playtest. Anyone can end the match here." : landingPhase === "ended" ? "The match ended and all player accounts and recovery keys were cleared. Reset to open the next lobby; the first new player becomes host." : landingPhase === "lobby" && landingPlayerCount > 0 ? landingPlayerCount + " old player accounts are still in this lobby. Anyone can clear them; the next person to join becomes host." : landingPhase === "lobby" ? "The shared lobby is empty. The first player to join becomes host." : landingPhase === "loading" ? "Checking the shared match…" : "The public playtest controls are available here."}
           </small>
-          {landingPhase === "ended" ? (
+          {landingPhase === "ended" || (landingPhase === "lobby" && landingPlayerCount > 0) ? (
             <button className="danger-button" style={{ width: "100%", justifyContent: "center", marginTop: 12 }} disabled={resettingPublicMatch} onClick={resetPublicMatch}>
-              {resettingPublicMatch ? "Resetting match…" : "Reset shared match"} <RefreshCw size={16}/>
+              {resettingPublicMatch ? "Clearing accounts…" : landingPhase === "ended" ? "Reset shared match" : "Clear all accounts"} <RefreshCw size={16}/>
             </button>
           ) : (
             <button className="danger-button" style={{ width: "100%", justifyContent: "center", marginTop: 12 }} disabled={endingPublicMatch || landingPhase !== "active"} onClick={endPublicMatch}>
