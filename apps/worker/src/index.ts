@@ -71,7 +71,19 @@ export class GameRoom {
   private state: DurableObjectState;
   constructor(state: DurableObjectState, _env: Env) { this.state = state; }
 
+  private queue: Promise<void> = Promise.resolve();
+
+  private exclusive<T>(task: () => Promise<T>): Promise<T> {
+    const next = this.queue.then(task, task);
+    this.queue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
   async fetch(request: Request): Promise<Response> {
+    return this.exclusive(() => this.route(request));
+  }
+
+  private async route(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     if (path === "/ws") return this.connect(request);
     if (path === "/create" && request.method === "POST") return this.create(request);
@@ -87,6 +99,10 @@ export class GameRoom {
   }
 
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    await this.exclusive(() => this.handleSocketMessage(socket, message));
+  }
+
+  private async handleSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     try {
       const session = socket.deserializeAttachment() as { playerId: string; token: string } | null;
       if (!session) return socket.close(1008, "Missing session");
@@ -110,6 +126,10 @@ export class GameRoom {
   }
 
   async webSocketClose(socket: WebSocket): Promise<void> {
+    await this.exclusive(() => this.handleSocketClose(socket));
+  }
+
+  private async handleSocketClose(socket: WebSocket): Promise<void> {
     const session = socket.deserializeAttachment() as { playerId: string; token: string } | null;
     if (!session) return;
     const game = await this.getGame();
