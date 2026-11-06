@@ -133,7 +133,25 @@ export default function App() {
     if (!API_BASE) { setError("Server URL is not configured. See README.md."); setConnection("offline"); return; }
     setLabels(readLabels(session.playerId));
     let stopped = false, retry = 0, retryId = 0;
-    const connect = () => {
+    const connect = async () => {
+      if (stopped) return;
+      // Validate again before every reconnect so tabs that were offline when a
+      // match ended also discard their now-invalid local session.
+      try {
+        await api("/api/game/recover", { playerId: session.playerId, token: session.token });
+      } catch (e) {
+        if (stopped) return;
+        const message = e instanceof Error ? e.message : "";
+        if (message.includes("does not match a saved player")) {
+          sessionStorage.removeItem(SESSION_KEY);
+          localStorage.removeItem("tank-turn-tactics-labels-" + session.playerId);
+          setError("This player account was cleared when the match ended. Join again to start the next game.");
+          setSession(null);
+          return;
+        }
+        // If validation is temporarily unavailable, still attempt the socket;
+        // its existing reconnect behavior will handle a server outage.
+      }
       if (stopped) return;
       setConnection("connecting");
       const endpoint = new URL(API_BASE);
@@ -160,8 +178,16 @@ export default function App() {
           } else if(message.type==="error")setError(String(message.message||"Action rejected."));
         } catch { /* ignore malformed frame */ }
       };
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (stopped) return;
+        if (event.code === 1008 && event.reason === "Player accounts cleared.") {
+          sessionStorage.removeItem(SESSION_KEY);
+          localStorage.removeItem("tank-turn-tactics-labels-" + session.playerId);
+          setError("The match ended and all player accounts were cleared. Join again to start the next game.");
+          setSession(null);
+          setConnection("offline");
+          return;
+        }
         setConnection("offline"); retry += 1;
         retryId = window.setTimeout(connect, Math.min(15000, 700 * 2 ** Math.min(retry, 4)));
       };
@@ -223,7 +249,7 @@ export default function App() {
     }
   };
   const resetPublicMatch = async () => {
-    if (resettingPublicMatch || !window.confirm("Reset the ended match to the lobby? This resets everyone's tank stats and clears private notes and match history, but keeps player accounts and tank colors.")) return;
+    if (resettingPublicMatch || !window.confirm("Open a fresh lobby? All player accounts and recovery keys from the ended match have been deleted. The first person to join the new lobby becomes host.")) return;
     setResettingPublicMatch(true);
     setError("");
     try {
@@ -313,7 +339,7 @@ export default function App() {
             {landingPhase === "active" ? "The shared match is underway" : landingPhase === "ended" ? "The shared match has ended" : landingPhase === "lobby" ? "The shared match is waiting in the lobby" : landingPhase === "loading" ? "Checking shared match…" : "Shared match status unavailable"}
           </b>
           <small style={{ display: "block", color: "#d7adb1", fontSize: 10, lineHeight: 1.5, marginTop: 5 }}>
-            {landingPhase === "active" ? landingPlayerCount + " players are in this playtest. Anyone can end the match here." : landingPhase === "ended" ? "Anyone can reset the playtest to the lobby so new players can join. Existing player accounts and tank colors are kept; tank stats, private notes, and match history are reset." : landingPhase === "lobby" ? "The shared lobby is open for players to join." : landingPhase === "loading" ? "Checking the shared match…" : "The public playtest controls are available here."}
+            {landingPhase === "active" ? landingPlayerCount + " players are in this playtest. Anyone can end the match here." : landingPhase === "ended" ? "Anyone can reopen the playtest lobby. All player accounts and recovery keys were cleared when the match ended; the first new player to join becomes host." : landingPhase === "lobby" ? "The shared lobby is open. The first player to join becomes host." : landingPhase === "loading" ? "Checking the shared match…" : "The public playtest controls are available here."}
           </small>
           {landingPhase === "ended" ? (
             <button className="danger-button" style={{ width: "100%", justifyContent: "center", marginTop: 12 }} disabled={resettingPublicMatch} onClick={resetPublicMatch}>
@@ -325,7 +351,7 @@ export default function App() {
             </button>
           )}
         </div>
-        <div className="card-foot"><KeyRound size={14}/> Recovery keys are private. Anyone holding one can control that player.</div>
+        <div className="card-foot"><KeyRound size={14}/> Recovery keys work only for the current match. All accounts and keys are cleared when the match ends.</div>
       </section>
     </main><footer className="landing-foot">16 × 16 TO 32 × 32 MAPS <span>•</span> UP TO {MAX_PLAYERS} PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
   </div>;
