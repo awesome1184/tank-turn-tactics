@@ -1,0 +1,14 @@
+{
+  "name": "tank-turn-tactics",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["apps/web", "apps/worker", "packages/shared"],
+  "scripts": {
+    "dev": "npm run dev --workspace @tank-turn-tactics/web",
+    "dev:worker": "npm run dev --workspace @tank-turn-tactics/worker",
+    "build": "npm run build --workspace @tank-turn-tactics/web",
+    "typecheck": "npm run typecheck --workspace @tank-turn-tactics/web && npm run typecheck --workspace @tank-turn-tactics/worker",
+    "deploy:worker": "npm run deploy --workspace @tank-turn-tactics/worker"
+  },
+  "engines": { "node": ">=20.0.0" }
+}
