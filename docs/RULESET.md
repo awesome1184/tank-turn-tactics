@@ -19,7 +19,7 @@ This is the exact ruleset implemented by the current prototype. It resolves deta
 
 ## 3. Movement
 - A move can travel orthogonally or diagonally, one tile per step (8 possible directions).
-- Each step costs 1 AP. The server finds the shortest legal path around obstacles and other tanks; a move costs the number of steps in that path.
+- Each step costs 1 AP. The server finds the shortest legal path around obstacles and other tanks; a move costs the number of steps in that path. The entire move is rejected if the player cannot pay the full path cost.
 - Tanks cannot move outside the board, through obstacles, or onto another tank's tile.
 - Eliminated tanks remain on their tile and continue to block movement.
 
@@ -33,10 +33,10 @@ This is the exact ruleset implemented by the current prototype. It resolves deta
 ## 5. Repairs, upgrades, and gifts
 - Repair: spend 3 AP to restore 1 HP to yourself, up to the 3 HP maximum.
 - Range upgrade: spend 3 AP to permanently increase your attack / gift range by 1 tile.
-- Gift AP: transfer 1–3 AP to another living player within your range. There is no transfer fee.
+- Gift AP: transfer 1–3 AP to another living player within your range. The sender pays exactly the amount gifted; there is no additional fee.
 - Gift a heart: transfer 1 HP to another player within your range. You cannot give away your last HP.
 - A living recipient gains 1 HP, up to 3 maximum. An eliminated recipient is revived at 1 HP with 0 AP; their next AP arrives 24 hours after revival.
-- AP and heart gifts do not consume AP.
+- Heart gifts do not require AP. AP gifts deduct the gifted amount from the sender's AP as described above.
 
 ## 6. Names, labels, chat, and connections
 - Names are 1–18 characters and visible to everyone.
