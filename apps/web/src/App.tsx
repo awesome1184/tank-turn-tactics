@@ -89,12 +89,12 @@ export default function App() {
     if(!replayEvents.length)return;
     const timer=window.setTimeout(()=>{
       if(replayIndex+1>=replayEvents.length){
-        send({type:"ackReplay",lastEventId:replayEvents[replayEvents.length-1].id});
+        if(socketRef.current?.readyState===WebSocket.OPEN)socketRef.current.send(JSON.stringify({type:"ackReplay",lastEventId:replayEvents[replayEvents.length-1].id}));
         setReplayEvents([]);setReplayIndex(0);
       } else setReplayIndex(index=>index+1);
     },1500);
     return ()=>window.clearTimeout(timer);
-  },[replayEvents,replayIndex,send]);
+  },[replayEvents,replayIndex]);
 
   useEffect(() => {
     if(!session||!notesDirtyRef.current||connection!=="online"||game?.phase==="ended")return;

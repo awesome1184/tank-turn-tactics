@@ -2,7 +2,7 @@ import {
   BOARD_SIZE, MAP_SIZES, DAILY_AP_INTERVAL_MS, MAX_HP, MAX_PLAYERS,
   RANGE_UPGRADE_COST, STARTING_AP, STARTING_HP, STARTING_RANGE, chebyshevDistance,
 } from "../../../packages/shared/src/contracts";
-import type { ClientAction, GameState, Player, PublicGameState } from "../../../packages/shared/src/contracts";
+import type { ClientAction, GameState, MatchEvent, Player, PublicGameState, PublicReplayEvent } from "../../../packages/shared/src/contracts";
 
 export interface Env { ROOMS: DurableObjectNamespace; }
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
