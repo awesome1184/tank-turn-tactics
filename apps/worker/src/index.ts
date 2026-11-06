@@ -31,7 +31,6 @@ export default {
     if (request.method === "OPTIONS") return cors(new Response(null, { status: 204 }));
     const url = new URL(request.url);
     try {
-      if (url.pathname === "/api/health") return cors(json({ ok: true, service: "tank-turn-tactics-api" }));
       const stub = stubFor(env);
       if (url.pathname === "/api/game/join" && request.method === "POST") {
         const body = await request.json() as { name?: unknown };
@@ -183,8 +182,6 @@ export class GameRoom {
       switch(event.type){
         case "player-join": message=`${target} joined the lobby.`; break;
         case "player-kick": message=`${actor} removed ${target} from the match.`; break;
-        case "player-join": message=`${target} joined the lobby.`; break;
-        case "player-kick": message=`${actor} removed ${target} from the match.`; break;
         case "match-start": message="The match started."; break;
         case "move": message=`${actor} moved to (${(event.x??-1)+1}, ${(event.y??-1)+1}).`; break;
         case "attack": message=event.killed?`${target} was eliminated.`:`${target} was hit.`; break;
@@ -245,6 +242,8 @@ export class GameRoom {
       const actor=event.actorName||"A player", target=event.targetName||"A player";
       let message:string|null=null;
       switch(event.type){
+        case "player-join": message=`${target} joined the lobby.`; break;
+        case "player-kick": message=`${actor} removed ${target} from the match.`; break;
         case "match-start": message="The match started."; break;
         case "move": message=`${actor} moved to (${(event.x??-1)+1}, ${(event.y??-1)+1}).`; break;
         case "attack":
@@ -314,7 +313,7 @@ export class GameRoom {
       return json({ playerId: player.id, token: player.token, name: player.name });
     }
     if (game.phase !== "lobby") {
-      return json({ error: "The shared match has already started. The host must reset it after the match ends before new players can join." }, 409);
+      return json({ error: "The shared match has already started. New players cannot join this match." }, 409);
     }
     if (game.players.length >= MAX_PLAYERS) return json({ error: "The shared match is full." }, 409);
     const firstPlayer = game.players.length === 0;

@@ -274,6 +274,8 @@ export default function App() {
       } else if(event.type==="gift-heart"&&event.targetId){
         const target=map.players.find(item=>item.id===event.targetId);
         if(target)target.alive=true;
+      } else if(event.type==="player-kick"&&event.targetId){
+        map.players=map.players.filter(item=>item.id!==event.targetId);
       }
     }
     return map;
@@ -376,13 +378,16 @@ export default function App() {
         <p className="micro-note">Only the host can change map size. Every player chooses their own tank color before the match.</p>
       </section>
       <section className="panel lobby-roster"><div className="section-title"><div><div className="eyebrow">THE ROSTER</div><h2>Players</h2></div><small>Names are public</small></div>
-        {game.players.map((p, i) => <div className="roster-row" key={p.id}><span className="roster-number">{i + 1}</span><i className="roster-color" style={{backgroundColor:p.color}}/><div><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.host ? "Lobby host" : "Ready to deploy"}</small></div>{p.host && <span className="host-chip">HOST</span>}{me?.host&&p.id!==me.id&&<button className="kick-button" onClick={()=>kickPlayer(p)} title={"Remove "+p.name}><UserX size={13}/> Kick</button>}</div>)}
+        {game.players.map((p, i) => <div className="roster-row" key={p.id}><span className="roster-number">{i + 1}</span><i className="roster-color" style={{backgroundColor:p.color}}/><div><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.host ? "Lobby host" : "Ready to start"}</small></div>{p.host && <span className="host-chip">HOST</span>}{me?.host&&p.id!==me.id&&<button className="kick-button" onClick={()=>kickPlayer(p)} title={"Remove "+p.name}><UserX size={13}/> Kick</button>}</div>)}
         {me?.host ? <button className="primary-button" disabled={game.players.length < 2} onClick={() => send({ type: "start" })}>Start match <ChevronRight/></button> : <p className="waiting">Waiting for the host to start the match…</p>}
         {game.players.length < 2 && <small className="muted">Invite at least one other player to unlock Start match.</small>}
       </section>
+      <section className="panel event-log-panel"><div className="section-title"><div><div className="eyebrow">MATCH HISTORY</div><h2>Public event log</h2></div><small>{game.eventLog.length} events</small></div>
+        <div className="event-log-list">{game.eventLog.length?game.eventLog.slice().reverse().slice(0,200).map(event=><article key={event.id}><time>{new Date(event.at).toLocaleString()}</time><p>{event.message}</p></article>):<small className="muted">No events yet.</small>}</div>
+      </section>
     </main> :
     <main className="game-main">
-      <div className="game-heading"><div><div className="eyebrow">{game.phase==="ended"?"MATCH COMPLETE":"LIVE MATCH"} · SHARED GAME</div><h1 className={game.phase==="ended"?"game-result-title":""}>{game.phase==="ended"?(winner?winner.name+" wins!":"The game was ended."):"Command your tank."}</h1><p>{game.phase==="ended"?(winner?"Last tank standing. Congratulations, "+winner.name+".":"The match was ended manually."):"Every move matters. Choose each action carefully."}</p></div><div className="game-pills"><span><Users size={15}/> {game.players.length} players</span><span>{game.onlineCount} {game.onlineCount===1?"person":"people"} online</span><span>{game.boardSize} × {game.boardSize} grid</span></div></div>
+      <div className="game-heading"><div><div className="eyebrow">{game.phase==="ended"?"MATCH COMPLETE":"LIVE MATCH"} · SHARED GAME</div><h1 className={game.phase==="ended"?"game-result-title":""}>{game.phase==="ended"?(winner?winner.name+" wins!":"No tanks remain."):"Command your tank."}</h1><p>{game.phase==="ended"?(winner?"Last tank standing. Congratulations, "+winner.name+".":"There are no surviving tanks."):"Every move matters. Choose each action carefully."}</p></div><div className="game-pills"><span><Users size={15}/> {game.players.length} players</span><span>{game.onlineCount} {game.onlineCount===1?"person":"people"} online</span><span>{game.boardSize} × {game.boardSize} grid</span></div></div>
       <div className="game-grid">
         <section className="panel map-panel"><div className="section-title"><div><div className="eyebrow">TACTICAL MAP</div><h2>Battlefield</h2></div><div className="legend"><span><i className="legend-you"/> You</span><span><i className="legend-ally"/> Allies</span><span><i className="legend-enemy"/> Enemies</span><span><i className="legend-rock"/> Obstacle</span></div></div>
           <div className="board-wrap"><div className={"board " + (game.boardSize > 20 ? "board-large" : "")} style={{ gridTemplateColumns: "repeat(" + game.boardSize + ", minmax(0, 1fr))", gridTemplateRows: "repeat(" + game.boardSize + ", minmax(0, 1fr))", gridAutoRows: "minmax(0, 1fr)" }}>{Array.from({ length: game.boardSize * game.boardSize }, (_, i) => {
