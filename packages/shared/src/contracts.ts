@@ -1,0 +1,19 @@
+export const BOARD_SIZE = 16;
+export const MAX_PLAYERS = 16;
+export const DAILY_AP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+export const STARTING_HP = 3;
+export const STARTING_AP = 0;
+export const STARTING_RANGE = 2;
+export const MAX_HP = 3;
+export const RANGE_UPGRADE_COST = 3;
+export const MAX_CHAT_MESSAGES = 50;
+
+export type MatchPhase = "lobby" | "active" | "ended";
+export type PlayerLabel = "ally" | "enemy" | "unmarked";
+export interface Player { id:string; token:string; name:string; hp:number; ap:number; range:number; x:number|null; y:number|null; alive:boolean; host:boolean; joinedAt:number; nextApAt:number|null; online:boolean; }
+export interface ChatMessage { id:string; playerId:string; playerName:string; text:string; at:number; }
+export interface GameState { code:string; phase:MatchPhase; hostId:string; createdAt:number; startedAt:number|null; updatedAt:number; boardSize:number; obstacles:Array<[number,number]>; players:Player[]; chat:ChatMessage[]; winnerId:string|null; }
+export interface PublicPlayer { id:string; name:string; hp:number; range:number; x:number|null; y:number|null; alive:boolean; host:boolean; online:boolean; }
+export interface PublicGameState { code:string; phase:MatchPhase; createdAt:number; startedAt:number|null; boardSize:number; obstacles:Array<[number,number]>; players:PublicPlayer[]; chat:ChatMessage[]; winnerId:string|null; me:{id:string;ap:number;nextApAt:number|null}; }
+export interface ClientAction { type:"sync"|"start"|"move"|"attack"|"heal"|"upgradeRange"|"giftAp"|"giftHp"|"chat"; x?:number; y?:number; targetId?:string; amount?:number; text?:string; }
+export function chebyshevDistance(ax:number,ay:number,bx:number,by:number):number { return Math.max(Math.abs(ax-bx),Math.abs(ay-by)); }
