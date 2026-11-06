@@ -76,6 +76,9 @@ export default function App() {
   const [debugOpen, setDebugOpen] = useState(false);
   const [debugHealth, setDebugHealth] = useState("Not checked");
   const [now, setNow] = useState(Date.now());
+  const [landingPhase, setLandingPhase] = useState<"loading" | "lobby" | "active" | "ended" | "unknown">("loading");
+  const [landingPlayerCount, setLandingPlayerCount] = useState(0);
+  const [endingPublicMatch, setEndingPublicMatch] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const notesDirtyRef = useRef(false);
   const notesDraftRef = useRef("");
@@ -84,6 +87,24 @@ export default function App() {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (session) return;
+    let cancelled = false;
+    const refreshMatchStatus = async () => {
+      try {
+        const status = await api("/api/game/state");
+        if (cancelled) return;
+        setLandingPhase(status.phase === "active" ? "active" : status.phase === "ended" ? "ended" : "lobby");
+        setLandingPlayerCount(typeof status.players === "number" ? status.players : 0);
+      } catch {
+        if (!cancelled) setLandingPhase("unknown");
+      }
+    };
+    void refreshMatchStatus();
+    const timer = window.setInterval(() => { void refreshMatchStatus(); }, 5000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [session]);
 
   useEffect(() => {
     if(!replayEvents.length)return;
@@ -186,6 +207,20 @@ export default function App() {
     socketRef.current?.close(); sessionStorage.removeItem(SESSION_KEY);
     setSession(null); setGame(null); setError(""); setRecoveryOpen(false); setDebugOpen(false);
   };
+  const endPublicMatch = async () => {
+    if (endingPublicMatch || !window.confirm("End the active shared match for everyone? This cannot be undone.")) return;
+    setEndingPublicMatch(true);
+    setError("");
+    try {
+      const result = await api("/api/game/end", {});
+      if (!result.ended) throw new Error(result.error || "The match could not be ended.");
+      setLandingPhase("ended");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not end the shared match.");
+    } finally {
+      setEndingPublicMatch(false);
+    }
+  };
   const recoveryKey = session ? makeRecoveryKey(session) : "";
   const downloadRecoveryKey = () => {
     if (!session) return;
@@ -257,6 +292,18 @@ export default function App() {
         <button className="primary-button" disabled={busy || (mode === "recover" ? !recoveryInput.trim() : !name.trim())} onClick={mode === "recover" ? restoreSession : enter}>
           {busy ? "Connecting…" : mode === "join" ? "Join shared game" : "Restore player"}<ChevronRight size={18}/>
         </button>
+        {landingPhase === "active" && <div style={{ marginTop: 14, padding: 13, background: "#3b282c", border: "1px solid #77414a", borderRadius: 10 }}>
+          <b style={{ display: "block", color: "#ffe5e6", fontSize: 12 }}>The shared match is already underway</b>
+          <small style={{ display: "block", color: "#d7adb1", fontSize: 10, lineHeight: 1.5, marginTop: 5 }}>
+            {landingPlayerCount} players are in this playtest. Anyone on this login screen can end the match.
+          </small>
+          <button className="danger-button" style={{ width: "100%", justifyContent: "center", marginTop: 12 }} disabled={endingPublicMatch} onClick={endPublicMatch}>
+            {endingPublicMatch ? "Ending match…" : "End active game"} <Shield size={16}/>
+          </button>
+        </div>}
+        {landingPhase === "ended" && <p style={{ margin: "13px 0 0", padding: 11, background: "#172a2c", border: "1px solid #335e59", borderRadius: 8, color: "#a5dac6", fontSize: 11, lineHeight: 1.5 }}>
+          The match has ended. The host must reset it before new players can join.
+        </p>}
         <div className="card-foot"><KeyRound size={14}/> Recovery keys are private. Anyone holding one can control that player.</div>
       </section>
     </main><footer className="landing-foot">16 × 16 TO 32 × 32 MAPS <span>•</span> UP TO {MAX_PLAYERS} PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
