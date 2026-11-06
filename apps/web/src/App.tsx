@@ -115,7 +115,7 @@ export default function App() {
   const target = game?.players.find((p) => p.id === selectedId);
   const canAct = game?.phase === "active" && !!me?.alive;
   const obstacles = useMemo(() => new Set(game?.obstacles.map(([x, y]) => x + "," + y) || []), [game?.obstacles]);
-  const occupants = useMemo(() => new Map((game?.players || []).filter((p) => p.x !== null && p.y !== null).map((p) => [p.x + "," + p.y, p])), [game?.players]);
+  const occupants = useMemo(() => new Map<string, PublicPlayer>((game?.players || []).filter((p) => p.x !== null && p.y !== null).map((p): [string, PublicPlayer] => [String(p.x) + "," + String(p.y), p])), [game?.players]);
   const updateLabel = (id: string, label: PlayerLabel) => {
     const next = { ...labels, [id]: label };
     setLabels(next);
