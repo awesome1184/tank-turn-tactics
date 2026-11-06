@@ -52,6 +52,10 @@ export default {
         // Public playtest control: anyone on the login screen can end the active shared match.
         return cors(await stub.fetch("https://game.internal/end", { method: "POST" }));
       }
+      if (url.pathname === "/api/game/reset" && request.method === "POST") {
+        // Public playtest control: anyone can return an ended match to the lobby.
+        return cors(await stub.fetch("https://game.internal/reset", { method: "POST" }));
+      }
       if (url.pathname === "/api/game/state" && request.method === "GET") {
         return cors(await stub.fetch("https://game.internal/state"));
       }
@@ -90,6 +94,7 @@ export class GameRoom {
     if (path === "/recover" && request.method === "POST") return this.recover(request);
     if (path === "/notes" && request.method === "POST") return this.notesArchive(request);
     if (path === "/end" && request.method === "POST") return this.endGameFromLanding();
+    if (path === "/reset" && request.method === "POST") return this.resetGameFromLanding();
     if (path === "/state") {
       const game = await this.getGame();
       if (!game) return json({ ok: true, exists: false, phase: "lobby", players: 0 });
@@ -245,6 +250,19 @@ export class GameRoom {
     await this.save(game);
     this.broadcast(game);
     return json({ ok: true, ended: true, phase: game.phase });
+  }
+
+  private async resetGameFromLanding(): Promise<Response> {
+    const game = await this.getGame();
+    if (!game) return json({ ok: false, reset: false, phase: "lobby", error: "There is no shared match to reset." }, 404);
+    if (game.phase !== "ended") {
+      return json({ ok: false, reset: false, phase: game.phase, error: "The shared match must end before it can be reset." }, 409);
+    }
+    const now = Date.now();
+    this.resetGame(game, now);
+    await this.save(game);
+    this.broadcast(game);
+    return json({ ok: true, reset: true, phase: game.phase, players: game.players.length });
   }
 
   private async join(request: Request): Promise<Response> {
