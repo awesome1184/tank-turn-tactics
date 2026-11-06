@@ -292,18 +292,17 @@ export default function App() {
         <button className="primary-button" disabled={busy || (mode === "recover" ? !recoveryInput.trim() : !name.trim())} onClick={mode === "recover" ? restoreSession : enter}>
           {busy ? "Connecting…" : mode === "join" ? "Join shared game" : "Restore player"}<ChevronRight size={18}/>
         </button>
-        {landingPhase === "active" && <div style={{ marginTop: 14, padding: 13, background: "#3b282c", border: "1px solid #77414a", borderRadius: 10 }}>
-          <b style={{ display: "block", color: "#ffe5e6", fontSize: 12 }}>The shared match is already underway</b>
+        <div style={{ marginTop: 14, padding: 13, background: landingPhase === "active" || landingPhase === "unknown" ? "#3b282c" : "#17232e", border: "1px solid " + (landingPhase === "active" || landingPhase === "unknown" ? "#77414a" : "#344957"), borderRadius: 10 }}>
+          <b style={{ display: "block", color: "#ffe5e6", fontSize: 12 }}>
+            {landingPhase === "active" ? "The shared match is underway" : landingPhase === "ended" ? "The shared match has ended" : landingPhase === "lobby" ? "The shared match is waiting in the lobby" : landingPhase === "loading" ? "Checking shared match…" : "Shared match status unavailable"}
+          </b>
           <small style={{ display: "block", color: "#d7adb1", fontSize: 10, lineHeight: 1.5, marginTop: 5 }}>
-            {landingPlayerCount} players are in this playtest. Anyone on this login screen can end the match.
+            {landingPhase === "active" ? landingPlayerCount + " players are in this playtest. Anyone can end the match here." : landingPhase === "ended" ? "The host must reset the match before new players can join." : landingPhase === "lobby" ? "No active match needs to be ended." : "The end-game control remains available for this playtest."}
           </small>
-          <button className="danger-button" style={{ width: "100%", justifyContent: "center", marginTop: 12 }} disabled={endingPublicMatch} onClick={endPublicMatch}>
-            {endingPublicMatch ? "Ending match…" : "End active game"} <Shield size={16}/>
+          <button className="danger-button" style={{ width: "100%", justifyContent: "center", marginTop: 12 }} disabled={endingPublicMatch || landingPhase === "loading" || landingPhase === "lobby" || landingPhase === "ended"} onClick={endPublicMatch}>
+            {endingPublicMatch ? "Ending match…" : landingPhase === "ended" ? "Match already ended" : landingPhase === "lobby" ? "No active game to end" : landingPhase === "loading" ? "Checking match…" : "End active game"} <Shield size={16}/>
           </button>
-        </div>}
-        {landingPhase === "ended" && <p style={{ margin: "13px 0 0", padding: 11, background: "#172a2c", border: "1px solid #335e59", borderRadius: 8, color: "#a5dac6", fontSize: 11, lineHeight: 1.5 }}>
-          The match has ended. The host must reset it before new players can join.
-        </p>}
+        </div>
         <div className="card-foot"><KeyRound size={14}/> Recovery keys are private. Anyone holding one can control that player.</div>
       </section>
     </main><footer className="landing-foot">16 × 16 TO 32 × 32 MAPS <span>•</span> UP TO {MAX_PLAYERS} PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
