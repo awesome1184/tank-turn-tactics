@@ -126,3 +126,13 @@
 .move-confirm-actions{display:flex;justify-content:flex-end;gap:9px;flex-wrap:wrap;margin-top:20px}
 .move-warning{display:block;color:#ffaaa9;font-size:11px;margin-top:8px}
 @media(max-width:560px){.move-confirm-card{padding:18px}.move-confirm-card h2{font-size:19px}.move-confirm-actions button{flex:1}}
+
+.event-log-panel{padding:18px}
+.event-log-list{display:grid;gap:0;max-height:390px;overflow:auto}
+.event-log-list article{padding:9px 0;border-top:1px solid #293b47}
+.event-log-list time{display:block;color:#8199a7;font:9px 'DM Mono';line-height:1.5}
+.event-log-list p{margin:4px 0 0;color:#d7e2e8;font-size:11px;line-height:1.45}
+.kick-button{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:6px 8px;border:1px solid #74434a;border-radius:7px;background:#38252b;color:#f1b9bd;font-size:9px;font-weight:700;white-space:nowrap}
+.kick-button:hover{background:#563039;border-color:#a45a64}
+.roster-row .kick-button{margin-left:4px}
+.field-row .kick-button{flex:none}

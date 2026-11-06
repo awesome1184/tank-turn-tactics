@@ -2,23 +2,22 @@
 
 Persistent browser-based multiplayer tank tactics game. The React client is hosted on GitHub Pages; a Cloudflare Worker and SQLite-backed Durable Object run one shared match.
 
-## v0.7 features
+## Features
 
-- One shared game, no room codes or chat; up to 64 players.
-- Multi-tab playtesting with tab-specific player sessions.
+- One shared match with up to 64 players.
+- Player accounts with private recovery keys.
 - 16×16, 20×20, 24×24, and 32×32 maps.
-- Lobby color picker; light-gray tiles inside your own firing range, dark-gray everywhere else.
-- Other tanks show green alive / red eliminated dots; your tank has a border.
-- Opponents cannot see your range or individual online status. Only an aggregate online headcount is shown.
+- Host-managed lobby, map size, and player removal.
+- Public event log with timestamps, visible to every player.
+- Reconnect replay shows missed events and reconstructs the actual battlefield as moves, eliminations, and revivals occur.
+- Green and red player markers indicate private ally/enemy labels, not alive or eliminated status.
+- Opponents cannot see your firing range or individual online status. Only an aggregate online headcount is shown.
 - Attacker attribution is hidden for non-lethal damage; victims can see who eliminated them.
-- Take a turn immediately grants +1 AP without affecting the daily AP timer.
-- Anyone can end an active playtest from the login screen without signing in; the in-game end control remains host-only.
 - Private notes autosave to the server. Their revision history is available only to the host after game end.
-- A reconnect replay shows events that happened while a player was disconnected, with timestamps and 1.5-second steps.
-- Recovery keys and a developer debug menu.
+- Turn-based movement, attacks, repairs, range upgrades, AP gifts, heart gifts, and the daily AP timer.
 
-## Multi-tab test
+## Joining a match
 
-Open a tab, join as the host, then use New player tab and join with new callsigns. Set colors in the lobby. Start the match. Use Take a turn immediately in each tab to grant AP. Close one tab, make moves from other tabs, then reopen/restore the offline player to see the While you were gone replay.
+Enter a callsign to join the shared lobby. The first player becomes host and can set the map size, remove players, and start the match once everyone is ready. Keep the recovery key private so you can restore your player from another browser.
 
-After a match ends, open Debug from the host tab to retrieve the private notes history.
+During a match, the public event log records important actions with timestamps. If you reconnect after being away, the replay shows missed events alongside the battlefield as it changed.

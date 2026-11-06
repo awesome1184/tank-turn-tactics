@@ -2,7 +2,7 @@ import {
   BOARD_SIZE, MAP_SIZES, DAILY_AP_INTERVAL_MS, MAX_HP, MAX_PLAYERS,
   RANGE_UPGRADE_COST, STARTING_AP, STARTING_HP, STARTING_RANGE, chebyshevDistance,
 } from "../../../packages/shared/src/contracts";
-import type { ClientAction, GameState, MatchEvent, Player, PublicGameState, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
+import type { ClientAction, GameState, MatchEvent, Player, PublicEventLogEntry, PublicGameState, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
 
 export interface Env { ROOMS: DurableObjectNamespace; }
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
@@ -48,20 +48,6 @@ export default {
       if (url.pathname === "/api/game/ws") {
         return stub.fetch(new Request("https://game.internal/ws" + url.search, request));
       }
-      if (url.pathname === "/api/game/end" && request.method === "POST") {
-        // Public playtest controls: reuse the established endpoint for both end and reset.
-        const body = await request.json().catch(() => ({})) as { action?: unknown };
-        const internalUrl = new URL("https://game.internal/end");
-        if (body.action === "reset") internalUrl.searchParams.set("action", "reset");
-        return cors(await stub.fetch(internalUrl.toString(), { method: "POST" }));
-      }
-      if (url.pathname === "/api/game/reset" && request.method === "POST") {
-        // Backward-compatible alias for older login pages.
-        return cors(await stub.fetch("https://game.internal/end?action=reset", { method: "POST" }));
-      }
-      if (url.pathname === "/api/game/state" && request.method === "GET") {
-        return cors(await stub.fetch("https://game.internal/state"));
-      }
       if (url.pathname === "/api/game/notes" && request.method === "POST") {
         const body = await request.json() as { playerId?: string; token?: string };
         return cors(await stub.fetch("https://game.internal/notes", {method:"POST",body:JSON.stringify(body)}));
@@ -96,19 +82,6 @@ export class GameRoom {
     if (path === "/join" && request.method === "POST") return this.join(request);
     if (path === "/recover" && request.method === "POST") return this.recover(request);
     if (path === "/notes" && request.method === "POST") return this.notesArchive(request);
-    if (path === "/end" && request.method === "POST") {
-      return routeUrl.searchParams.get("action") === "reset"
-        ? this.resetGameFromLanding()
-        : this.endGameFromLanding();
-    }
-    if (path === "/reset" && request.method === "POST") return this.resetGameFromLanding();
-    if (path === "/state") {
-      const game = await this.getGame();
-      if (!game) return json({ ok: true, exists: false, phase: "lobby", players: 0 });
-      this.applyDailyAp(game, Date.now());
-      await this.save(game);
-      return json({ ok: true, exists: true, phase: game.phase, players: game.players.length, boardSize: game.boardSize });
-    }
     return json({ error: "Not found." }, 404);
   }
 
@@ -203,6 +176,29 @@ export class GameRoom {
     }
   }
 
+  private publicEventLog(game:GameState):PublicEventLogEntry[] {
+    return game.events.slice(-500).flatMap(event=>{
+      const actor=event.actorName||"A player", target=event.targetName||"A player";
+      let message:string|null=null;
+      switch(event.type){
+        case "player-join": message=`${target} joined the lobby.`; break;
+        case "player-kick": message=`${actor} removed ${target} from the match.`; break;
+        case "player-join": message=`${target} joined the lobby.`; break;
+        case "player-kick": message=`${actor} removed ${target} from the match.`; break;
+        case "match-start": message="The match started."; break;
+        case "move": message=`${actor} moved to (${(event.x??-1)+1}, ${(event.y??-1)+1}).`; break;
+        case "attack": message=event.killed?`${target} was eliminated.`:`${target} was hit.`; break;
+        case "heal": message=`${actor} repaired their tank.`; break;
+        case "range-upgrade": message=`${actor} upgraded their range.`; break;
+        case "gift-ap": message=`${actor} sent 1 AP to ${target}.`; break;
+        case "gift-heart": message=`${actor} gave a heart to ${target}.`; break;
+        case "match-end": message=event.targetName?`${target} wins!`:"The match ended."; break;
+        default: message=null;
+      }
+      return message?[{id:event.id,at:event.at,message}]:[];
+    });
+  }
+
   private captureReplayMap(game:GameState):ReplayMapSnapshot {
     return {
       boardSize:game.boardSize,
@@ -221,6 +217,8 @@ export class GameRoom {
     } else if(event.type==="gift-heart"&&event.targetId){
       const target=snapshot.players.find(item=>item.id===event.targetId);
       if(target)target.alive=true;
+    } else if(event.type==="player-kick"&&event.targetId){
+      snapshot.players=snapshot.players.filter(item=>item.id!==event.targetId);
     }
   }
 
@@ -258,8 +256,6 @@ export class GameRoom {
         case "range-upgrade": message=event.actorId===player.id?"You upgraded your range.":null; break;
         case "gift-ap": message=`${actor} sent 1 AP to ${target}.`; break;
         case "gift-heart": message=`${actor} gave a heart to ${target}.`; break;
-        case "take-turn": message=event.actorId===player.id?"You took an immediate turn (+1 AP).":null; break;
-        case "manual-end": message="The match was ended manually."; break;
         case "daily-ap": message=event.actorId===player.id?`You received ${event.amount||1} AP from the daily timer.`:null; break;
         case "match-end": message=event.targetName?`${target} wins!`:"The match ended."; break;
       }
@@ -295,36 +291,6 @@ export class GameRoom {
     return json({entries:game.notesHistory||[]});
   }
 
-  private async endGameFromLanding(): Promise<Response> {
-    const game = await this.getGame();
-    if (!game) return json({ ok: false, ended: false, phase: "lobby", error: "There is no shared match to end." }, 404);
-    if (game.phase !== "active") {
-      return json({ ok: false, ended: false, phase: game.phase, error: "There is no active match to end." }, 409);
-    }
-    const now = Date.now();
-    game.phase = "ended";
-    game.winnerId = null;
-    game.endReason = "ended-by-request";
-    this.recordEvent(game, "manual-end", null);
-    this.updateOnlineCursors(game);
-    await this.save(game);
-    this.broadcast(game);
-    return json({ ok: true, ended: true, phase: game.phase });
-  }
-
-  private async resetGameFromLanding(): Promise<Response> {
-    const game = await this.getGame();
-    if (!game) return json({ ok: false, reset: false, phase: "lobby", error: "There is no shared match to reset." }, 404);
-    if (game.phase === "active") {
-      return json({ ok: false, reset: false, phase: game.phase, error: "End the active match before clearing player accounts." }, 409);
-    }
-    const now = Date.now();
-    this.resetGame(game, now);
-    await this.save(game);
-    this.broadcast(game);
-    return json({ ok: true, reset: true, phase: game.phase, players: game.players.length });
-  }
-
   private async join(request: Request): Promise<Response> {
     const body = await request.json() as { name: string };
     const now = Date.now();
@@ -343,6 +309,7 @@ export class GameRoom {
         updatedAt: now, boardSize: BOARD_SIZE, obstacles: [], players: [player],
         winnerId:null,endReason:null,juryCycleEndsAt:null,juryVotes:{},notesHistory:[],events:[],nextEventId:1,
       };
+      this.recordEvent(game,"player-join",null,player);
       await this.save(game);
       return json({ playerId: player.id, token: player.token, name: player.name });
     }
@@ -359,6 +326,7 @@ export class GameRoom {
     };
     if (firstPlayer) game.hostId = player.id;
     game.players.push(player);
+    this.recordEvent(game,"player-join",null,player);
     game.updatedAt = now;
     await this.save(game);
     return json({ playerId: player.id, token: player.token, name: player.name });
@@ -452,11 +420,24 @@ export class GameRoom {
       actor.replayMapSnapshot=undefined;
       return;
     }
-    if (action.type === "endGame") {
-      if (!actor.host) throw new Error("Only the host can end the shared match.");
-      if(game.phase!=="active")throw new Error("There is no active match to end.");
-      game.phase="ended";game.winnerId=null;game.endReason="ended-by-host";
-      this.recordEvent(game,"manual-end",actor);return;
+    if (action.type === "kick") {
+      if (!actor.host) throw new Error("Only the host can remove players.");
+      if (game.phase === "ended") throw new Error("Players cannot be removed after the match ends.");
+      if (typeof action.targetId !== "string" || action.targetId === actor.id) throw new Error("Choose another player to remove.");
+      const targetIndex=game.players.findIndex(player=>player.id===action.targetId);
+      if(targetIndex<0)throw new Error("That player is no longer in the match.");
+      const target=game.players[targetIndex];
+      this.recordEvent(game,"player-kick",actor,target);
+      game.players.splice(targetIndex,1);
+      delete game.juryVotes[target.id];
+      for(const vote of Object.values(game.juryVotes))if(vote.targetId===target.id)vote.invalidated=true;
+      game.notesHistory=game.notesHistory.filter(entry=>entry.playerId!==target.id);
+      if(game.phase==="active"){
+        const alive=game.players.filter(player=>player.alive);
+        if(alive.length===1){game.phase="ended";game.winnerId=alive[0].id;game.endReason="last-player-standing";this.recordEvent(game,"match-end",null,alive[0]);}
+        else if(alive.length===0){game.phase="ended";game.winnerId=null;game.endReason="no-survivors";}
+      }
+      return;
     }
     if (action.type === "setColor") {
       if(game.phase!=="lobby")throw new Error("Tank colors can only be changed in the lobby.");
@@ -473,12 +454,6 @@ export class GameRoom {
         actor.notes=nextNotes;
         game.notesHistory.push({id:crypto.randomUUID(),playerId:actor.id,playerName:actor.name,text:nextNotes,at:now});
       }
-      return;
-    }
-    if (action.type === "reset") {
-      if (!actor.host) throw new Error("Only the host can reset the shared match.");
-      if (game.phase !== "ended") throw new Error("The match can only be reset after it ends.");
-      this.resetGame(game, now);
       return;
     }
     if (action.type === "setMapSize") {
@@ -501,8 +476,6 @@ export class GameRoom {
     if (!actor.alive && action.type !== "juryVote") throw new Error("Eliminated players can only cast jury votes.");
 
     switch (action.type) {
-      case "takeTurn":
-        actor.ap+=1;this.recordEvent(game,"take-turn",actor);return;
       case "move": {
         const x = Number(action.x), y = Number(action.y);
         if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= game.boardSize || y >= game.boardSize) throw new Error("Choose a tile on the board.");
@@ -601,28 +574,6 @@ export class GameRoom {
     this.recordEvent(game,"match-start",null,undefined,{mapSnapshot:this.captureReplayMap(game)});
   }
 
-  private resetGame(game: GameState, now: number): void {
-    game.phase = "lobby";
-    game.startedAt = null;
-    game.endReason = null;
-    this.clearPlayerAccounts(game, now);
-  }
-
-  private clearPlayerAccounts(game: GameState, now: number): void {
-    // Ended matches must not carry old accounts, recovery tokens, or host ownership
-    // into the next playtest. The next person to join the reset lobby becomes host.
-    game.players = [];
-    game.hostId = "";
-    game.winnerId = null;
-    game.obstacles = [];
-    game.juryCycleEndsAt = null;
-    game.juryVotes = {};
-    game.notesHistory = [];
-    game.events = [];
-    game.nextEventId = 1;
-    game.updatedAt = now;
-  }
-
   private spend(player: Player, amount: number): void {
     if (!Number.isInteger(amount) || amount < 0) throw new Error("Invalid AP amount.");
     if (player.ap < amount) throw new Error("Not enough AP. You need " + amount + ", and have " + player.ap + ".");
@@ -676,6 +627,7 @@ export class GameRoom {
       phase:game.phase,createdAt:game.createdAt,startedAt:game.startedAt,boardSize:game.boardSize,
       obstacles:game.obstacles,winnerId:game.winnerId,endReason:game.endReason||null,
       onlineCount:game.players.filter(p=>p.online).length,
+      eventLog:this.publicEventLog(game),
       players:game.players.map(({id,name,color,hp,x,y,alive,host})=>({id,name,color,hp,x,y,alive,host})),
       jury:{memberCount:game.players.filter(p=>!p.alive).length,cycleEndsAt:game.juryCycleEndsAt},
       me:{id:player.id,ap:player.ap,nextApAt:player.nextApAt,range:player.range,notes:player.notes||"",
@@ -689,7 +641,7 @@ export class GameRoom {
       const session = socket.deserializeAttachment() as { playerId: string; token: string } | null;
       if (!session) continue;
       const player = game.players.find((p) => p.id === session.playerId && p.token === session.token);
-      if (!player) { socket.close(1008, "Player accounts cleared."); continue; }
+      if (!player) { socket.close(1008, "Kicked by host."); continue; }
       try { socket.send(JSON.stringify({ type: "state", state: this.publicState(game, player) })); }
       catch { /* closed socket */ }
     }

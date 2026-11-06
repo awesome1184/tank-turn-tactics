@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BatteryCharging, Bug, ChevronRight, Copy, Crosshair, Download, Heart, KeyRound, Move, RefreshCw, Shield, Skull, Swords, Users, Zap } from "lucide-react";
+import { BatteryCharging, ChevronRight, Copy, Crosshair, Download, Heart, KeyRound, Move, RefreshCw, Shield, Skull, Swords, UserX, Users } from "lucide-react";
 import { MAP_SIZES, MAX_PLAYERS } from "../../../packages/shared/src/contracts";
 import type { NoteHistoryEntry, PlayerLabel, PublicGameState, PublicPlayer, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
 
@@ -95,13 +95,7 @@ export default function App() {
   const [replayIndex, setReplayIndex] = useState(0);
   const [recoveryInput, setRecoveryInput] = useState("");
   const [recoveryOpen, setRecoveryOpen] = useState(false);
-  const [debugOpen, setDebugOpen] = useState(false);
-  const [debugHealth, setDebugHealth] = useState("Not checked");
   const [now, setNow] = useState(Date.now());
-  const [landingPhase, setLandingPhase] = useState<"loading" | "lobby" | "active" | "ended" | "unknown">("loading");
-  const [landingPlayerCount, setLandingPlayerCount] = useState(0);
-  const [endingPublicMatch, setEndingPublicMatch] = useState(false);
-  const [resettingPublicMatch, setResettingPublicMatch] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const notesDirtyRef = useRef(false);
   const notesDraftRef = useRef("");
@@ -110,24 +104,6 @@ export default function App() {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
-
-  useEffect(() => {
-    if (session) return;
-    let cancelled = false;
-    const refreshMatchStatus = async () => {
-      try {
-        const status = await api("/api/game/state");
-        if (cancelled) return;
-        setLandingPhase(status.phase === "active" ? "active" : status.phase === "ended" ? "ended" : "lobby");
-        setLandingPlayerCount(typeof status.players === "number" ? status.players : 0);
-      } catch {
-        if (!cancelled) setLandingPhase("unknown");
-      }
-    };
-    void refreshMatchStatus();
-    const timer = window.setInterval(() => { void refreshMatchStatus(); }, 5000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [session]);
 
   useEffect(() => {
     if(!replayEvents.length)return;
@@ -167,7 +143,7 @@ export default function App() {
         if (message.includes("does not match a saved player")) {
           sessionStorage.removeItem(SESSION_KEY);
           localStorage.removeItem("tank-turn-tactics-labels-" + session.playerId);
-          setError("This player account was cleared when the match ended. Join again to start the next game.");
+          setError("This player account is no longer active. It may have been removed by the host.");
           setSession(null);
           return;
         }
@@ -202,10 +178,10 @@ export default function App() {
       };
       socket.onclose = (event) => {
         if (stopped) return;
-        if (event.code === 1008 && event.reason === "Player accounts cleared.") {
+        if (event.code === 1008 && event.reason === "Kicked by host.") {
           sessionStorage.removeItem(SESSION_KEY);
           localStorage.removeItem("tank-turn-tactics-labels-" + session.playerId);
-          setError("The match ended and all player accounts were cleared. Join again to start the next game.");
+          setError("The host removed this player from the match.");
           setSession(null);
           setConnection("offline");
           return;
@@ -254,36 +230,7 @@ export default function App() {
   };
   const leave = () => {
     socketRef.current?.close(); sessionStorage.removeItem(SESSION_KEY);
-    setSession(null); setGame(null); setError(""); setRecoveryOpen(false); setDebugOpen(false);
-  };
-  const endPublicMatch = async () => {
-    if (endingPublicMatch || !window.confirm("End the active shared match for everyone? This cannot be undone.")) return;
-    setEndingPublicMatch(true);
-    setError("");
-    try {
-      const result = await api("/api/game/end", {});
-      if (!result.ended) throw new Error(result.error || "The match could not be ended.");
-      setLandingPhase("ended");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not end the shared match.");
-    } finally {
-      setEndingPublicMatch(false);
-    }
-  };
-  const resetPublicMatch = async () => {
-    if (resettingPublicMatch || !window.confirm("Clear every existing player account and recovery key, then open an empty lobby? Everyone will be logged out. The first person to join afterwards becomes host.")) return;
-    setResettingPublicMatch(true);
-    setError("");
-    try {
-      const result = await api("/api/game/end", { action: "reset" });
-      if (!result.reset) throw new Error(result.error || "The match could not be reset.");
-      setLandingPhase("lobby");
-      setLandingPlayerCount(typeof result.players === "number" ? result.players : landingPlayerCount);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not reset the shared match.");
-    } finally {
-      setResettingPublicMatch(false);
-    }
+    setSession(null); setGame(null); setError(""); setRecoveryOpen(false);
   };
   const recoveryKey = session ? makeRecoveryKey(session) : "";
   const downloadRecoveryKey = () => {
@@ -293,11 +240,6 @@ export default function App() {
     const anchor = document.createElement("a");
     anchor.href = url; anchor.download = "tank-turn-tactics-player-recovery-key.txt";
     anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
-  const checkApiHealth = async () => {
-    setDebugHealth("Checking…");
-    try { const result = await api("/api/health"); setDebugHealth("Healthy · " + result.service); }
-    catch (e) { setDebugHealth("Failed · " + (e instanceof Error ? e.message : "Request failed")); }
   };
   const loadNotesArchive=async()=>{
     if(!session)return;setNotesArchiveLoading(true);
@@ -309,18 +251,6 @@ export default function App() {
   const skipReplay=()=>{
     if(replayEvents.length)send({type:"ackReplay",lastEventId:replayEvents[replayEvents.length-1].id});
     setReplayEvents([]);setReplayIndex(0);
-  };
-  const copyDiagnostics = async () => {
-    const report = {
-      app: "Tank Turn Tactics v0.6", apiBase: API_BASE || "not configured",
-      connection, websocketState: socketRef.current?.readyState ?? null,
-      sharedMatch: true, phase: game?.phase ?? null,
-      playerCount: game?.players.length ?? null, boardSize: game?.boardSize ?? null,
-      apiHealth: debugHealth, lastError: error || null, timestamp: new Date().toISOString(),
-      // Recovery tokens are intentionally excluded.
-    };
-    try { await navigator.clipboard.writeText(JSON.stringify(report, null, 2)); setError("Diagnostics copied. Recovery credentials were not included."); }
-    catch { setError("Clipboard access was blocked. Try the browser's secure-site permissions."); }
   };
   const me = game?.players.find((p) => p.id === session?.playerId);
   const winner = game?.winnerId ? game.players.find((p) => p.id === game.winnerId) : undefined;
@@ -368,6 +298,11 @@ export default function App() {
     send({type:"move",x:selectedMove.x,y:selectedMove.y});
     setSelectedMove(null);setMoveConfirmationOpen(false);
   };
+  const kickPlayer=(player:PublicPlayer)=>{
+    if(!me?.host||player.id===me.id||game?.phase==="ended")return;
+    if(!window.confirm("Remove "+player.name+" from this match? Their current player account and recovery key will stop working."))return;
+    send({type:"kick",targetId:player.id});
+  };
   const updateLabel = (id: string, label: PlayerLabel) => {
     const next = { ...labels, [id]: label };
     setLabels(next);
@@ -379,7 +314,7 @@ export default function App() {
   if (!session) return <div className="landing">
     <header className="brand"><div className="brand-icon"><Shield/></div><div><b>TANK TURN TACTICS</b><small>A long game of short decisions</small></div></header>
     <main className="landing-grid">
-      <section className="intro"><div className="eyebrow">ONE SHARED MULTIPLAYER MATCH</div><h1>Make every<br/><em>move count.</em></h1><p>Open this page in a few separate tabs and join with a different callsign in each. Every tab gets its own tank, so you can test the game solo.</p><div className="features"><span><Move size={16}/> Tactical grid</span><span><Users size={16}/> Multi-tab playtest</span><span><BatteryCharging size={16}/> Daily AP</span></div></section>
+      <section className="intro"><div className="eyebrow">ONE SHARED MULTIPLAYER MATCH</div><h1>Make every<br/><em>move count.</em></h1><p>Join with your callsign, coordinate with other players, and make every action point count. Each player has an independent account and recovery key.</p><div className="features"><span><Move size={16}/> Tactical grid</span><span><Users size={16}/> Shared multiplayer</span><span><BatteryCharging size={16}/> Daily AP</span></div></section>
       <section className="panel join-card">
         <div className="tabs">
           <button className={mode === "join" ? "active" : ""} onClick={() => setMode("join")}>Join game</button>
@@ -387,7 +322,7 @@ export default function App() {
         </div>
         <div className="eyebrow">{mode === "join" ? "SHARED MATCH" : "RESTORE A PLAYER"}</div>
         <h2>{mode === "join" ? "Join the game." : "Recover your save."}</h2>
-        <p>{mode === "join" ? "The first player becomes host. Open a new tab for every additional player. The host starts once everyone has joined." : "Paste the recovery key you saved earlier to reconnect to this player."}</p>
+        <p>{mode === "join" ? "Join the shared lobby. The first player becomes host and can start the match once everyone is ready." : "Paste the recovery key you saved earlier to reconnect to this player."}</p>
         {mode === "recover" ? (
           <label>RECOVERY KEY<textarea className="recovery-input" value={recoveryInput} rows={4} placeholder="TTT2.…" onChange={(e) => setRecoveryInput(e.target.value)}/></label>
         ) : (
@@ -397,30 +332,13 @@ export default function App() {
         <button className="primary-button" disabled={busy || (mode === "recover" ? !recoveryInput.trim() : !name.trim())} onClick={mode === "recover" ? restoreSession : enter}>
           {busy ? "Connecting…" : mode === "join" ? "Join shared game" : "Restore player"}<ChevronRight size={18}/>
         </button>
-        <div style={{ marginTop: 14, padding: 13, background: landingPhase === "active" || landingPhase === "unknown" ? "#3b282c" : "#17232e", border: "1px solid " + (landingPhase === "active" || landingPhase === "unknown" ? "#77414a" : "#344957"), borderRadius: 10 }}>
-          <b style={{ display: "block", color: "#ffe5e6", fontSize: 12 }}>
-            {landingPhase === "active" ? "The shared match is underway" : landingPhase === "ended" ? "The shared match has ended" : landingPhase === "lobby" ? "The shared match is waiting in the lobby" : landingPhase === "loading" ? "Checking shared match…" : "Shared match status unavailable"}
-          </b>
-          <small style={{ display: "block", color: "#d7adb1", fontSize: 10, lineHeight: 1.5, marginTop: 5 }}>
-            {landingPhase === "active" ? landingPlayerCount + " players are in this playtest. Anyone can end the match here." : landingPhase === "ended" ? "The match result and replay are saved. Reset to open the next lobby; resetting clears all old accounts and recovery keys, and the first new player becomes host." : landingPhase === "lobby" && landingPlayerCount > 0 ? landingPlayerCount + " old player accounts are still in this lobby. Anyone can clear them; the next person to join becomes host." : landingPhase === "lobby" ? "The shared lobby is empty. The first player to join becomes host." : landingPhase === "loading" ? "Checking the shared match…" : "The public playtest controls are available here."}
-          </small>
-          {landingPhase === "ended" || (landingPhase === "lobby" && landingPlayerCount > 0) ? (
-            <button className="danger-button" style={{ width: "100%", justifyContent: "center", marginTop: 12 }} disabled={resettingPublicMatch} onClick={resetPublicMatch}>
-              {resettingPublicMatch ? "Clearing accounts…" : landingPhase === "ended" ? "Reset shared match" : "Clear all accounts"} <RefreshCw size={16}/>
-            </button>
-          ) : (
-            <button className="danger-button" style={{ width: "100%", justifyContent: "center", marginTop: 12 }} disabled={endingPublicMatch || landingPhase !== "active"} onClick={endPublicMatch}>
-              {endingPublicMatch ? "Ending match…" : landingPhase === "active" ? "End active game" : landingPhase === "loading" ? "Checking match…" : "No active game to end"} <Shield size={16}/>
-            </button>
-          )}
-        </div>
-        <div className="card-foot"><KeyRound size={14}/> Recovery keys remain valid while the result is displayed. Resetting the match clears every old account and key.</div>
+        <div className="card-foot"><KeyRound size={14}/> Keep your recovery key private. It restores this player from another browser.</div>
       </section>
     </main><footer className="landing-foot">16 × 16 TO 32 × 32 MAPS <span>•</span> UP TO {MAX_PLAYERS} PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
   </div>;
 
   return <div className="shell">
-    <header className="topbar"><div className="brand"><div className="brand-icon"><Shield/></div><div><b>TANK TURN TACTICS</b><small>One shared game · each tab is a player</small></div></div><div className="top-right"><span className={"connection " + connection}><i/>{connection === "online" ? "Connected" : connection === "connecting" ? "Connecting" : "Reconnecting"}</span><button className="quiet-button" onClick={() => window.open(window.location.href, "_blank", "noopener,noreferrer")}><Users size={14}/> New player tab</button><button className="quiet-button" onClick={() => { setRecoveryOpen(!recoveryOpen); setDebugOpen(false); }}><KeyRound size={14}/> Save key</button><button className="quiet-button" onClick={() => { setDebugOpen(!debugOpen); setRecoveryOpen(false); }}><Bug size={14}/> Debug</button><button className="quiet-button" onClick={leave}>Switch player</button></div></header>
+    <header className="topbar"><div className="brand"><div className="brand-icon"><Shield/></div><div><b>TANK TURN TACTICS</b><small>One shared game · each tab is a player</small></div></div><div className="top-right"><span className={"connection " + connection}><i/>{connection === "online" ? "Connected" : connection === "connecting" ? "Connecting" : "Reconnecting"}</span><button className="quiet-button" onClick={() => window.open(window.location.href, "_blank", "noopener,noreferrer")}><Users size={14}/> New player tab</button><button className="quiet-button" onClick={() => setRecoveryOpen(!recoveryOpen)}><KeyRound size={14}/> Save key</button><button className="quiet-button" onClick={leave}>Switch player</button></div></header>
     {recoveryOpen && <section className="panel utility-panel recovery-panel">
       <div className="section-title"><div><div className="eyebrow">PLAYER BACKUP</div><h2>Recovery key</h2></div><button className="quiet-button" onClick={() => setRecoveryOpen(false)}>Close</button></div>
       <p>Save this private key somewhere safe. It restores this exact player and server-saved game state on another browser. Anyone holding it can take over the player.</p>
@@ -429,30 +347,6 @@ export default function App() {
         <button className="secondary-button" onClick={() => navigator.clipboard.writeText(recoveryKey).then(() => setError("Recovery key copied."), () => setError("Clipboard blocked. Use Download key instead."))}><Copy size={14}/> Copy key</button>
         <button className="secondary-button" onClick={downloadRecoveryKey}><Download size={14}/> Download .txt</button>
       </div>
-    </section>}
-    {debugOpen && <section className="panel utility-panel debug-panel">
-      <div className="section-title"><div><div className="eyebrow">DEVELOPER TOOLS</div><h2>Debug menu</h2></div><button className="quiet-button" onClick={() => setDebugOpen(false)}>Close</button></div>
-      <div className="debug-grid">
-        <div><small>Connection</small><b>{connection}</b></div><div><small>Room phase</small><b>{game?.phase || "Loading"}</b></div>
-        <div><small>Players</small><b>{game?.players.length ?? "—"} / {MAX_PLAYERS}</b></div><div><small>Map</small><b>{game ? game.boardSize + " × " + game.boardSize : "—"}</b></div>
-        <div><small>WebSocket</small><b>{socketRef.current?.readyState ?? "—"}</b></div><div><small>API health</small><b>{debugHealth}</b></div>
-      </div>
-      <p className="debug-api">API: <code>{API_BASE || "not configured"}</code></p>
-      {error && <p className="debug-error">Last client message: {error}</p>}
-      <div className="utility-actions">
-        <button className="secondary-button" onClick={() => send({ type: "sync" })}>Send sync</button>
-        <button className="secondary-button" onClick={checkApiHealth}>Check API</button>
-        <button className="secondary-button" onClick={() => { socketRef.current?.close(); setConnection("connecting"); }}>Reconnect</button>
-        <button className="secondary-button" onClick={copyDiagnostics}>Copy diagnostics</button>
-      </div>
-      {game?.phase==="ended"&&me?.host&&<section className="notes-archive">
-        <div className="section-title"><div><div className="eyebrow">HOST-ONLY GAME RECORD</div><h3>Private notes history</h3></div></div>
-        <p>Saved revisions from every player's private notes, visible only to the host after the match ends.</p>
-        <button className="secondary-button" onClick={loadNotesArchive} disabled={notesArchiveLoading}>{notesArchiveLoading?"Loading…":"Load notes history"}</button>
-        {notesArchive&&<div className="notes-archive-list">{notesArchive.length?notesArchive.map(entry=><article key={entry.id}><div><b>{entry.playerName}</b><time>{new Date(entry.at).toLocaleString()}</time></div><pre>{entry.text||"(cleared notes)"}</pre></article>):<small>No notes were saved this match.</small>}</div>}
-      </section>}
-      <details><summary>Show public match state</summary><pre>{game ? JSON.stringify({ phase: game.phase, boardSize: game.boardSize, players: game.players, obstacles: game.obstacles }, null, 2) : "No match state received yet."}</pre></details>
-      <small className="debug-note">Diagnostics do not include your recovery token or API credentials.</small>
     </section>}
     {error && <div className="toast">{error}<button onClick={() => setError("")}>×</button></div>}
     {moveConfirmationOpen&&selectedMove&&<div className="move-confirm-overlay" role="dialog" aria-modal="true" aria-label="Confirm movement" onClick={event=>{if(event.target===event.currentTarget){setMoveConfirmationOpen(false);}}}><section className="move-confirm-card"><div className="eyebrow">CONFIRM MOVEMENT</div><h2>Move to ({selectedMove.x+1}, {selectedMove.y+1})?</h2><p>This move will spend <strong>{selectedMoveCost===null?selectedMove.cost:selectedMoveCost} AP</strong>.</p>{selectedMoveCost===null?<small className="move-warning">That destination can no longer be reached.</small>:game&&game.me.ap<selectedMoveCost?<small className="move-warning">You only have {game.me.ap} AP available.</small>:null}<div className="move-confirm-actions"><button className="secondary-button" onClick={()=>setMoveConfirmationOpen(false)}>Cancel</button><button className="primary-button" disabled={selectedMoveCost===null||!game||game.me.ap<selectedMoveCost} onClick={confirmMove}>Confirm move · {selectedMoveCost===null?selectedMove.cost:selectedMoveCost} AP</button></div></section></div>}
@@ -482,13 +376,13 @@ export default function App() {
         <p className="micro-note">Only the host can change map size. Every player chooses their own tank color before the match.</p>
       </section>
       <section className="panel lobby-roster"><div className="section-title"><div><div className="eyebrow">THE ROSTER</div><h2>Players</h2></div><small>Names are public</small></div>
-        {game.players.map((p, i) => <div className="roster-row" key={p.id}><span className="roster-number">{i + 1}</span><i className="roster-color" style={{backgroundColor:p.color}}/><div><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.host ? "Lobby host" : "Ready to deploy"}</small></div>{p.host && <span className="host-chip">HOST</span>}</div>)}
+        {game.players.map((p, i) => <div className="roster-row" key={p.id}><span className="roster-number">{i + 1}</span><i className="roster-color" style={{backgroundColor:p.color}}/><div><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.host ? "Lobby host" : "Ready to deploy"}</small></div>{p.host && <span className="host-chip">HOST</span>}{me?.host&&p.id!==me.id&&<button className="kick-button" onClick={()=>kickPlayer(p)} title={"Remove "+p.name}><UserX size={13}/> Kick</button>}</div>)}
         {me?.host ? <button className="primary-button" disabled={game.players.length < 2} onClick={() => send({ type: "start" })}>Start match <ChevronRight/></button> : <p className="waiting">Waiting for the host to start the match…</p>}
         {game.players.length < 2 && <small className="muted">Invite at least one other player to unlock Start match.</small>}
       </section>
     </main> :
     <main className="game-main">
-      <div className="game-heading"><div><div className="eyebrow">{game.phase==="ended"?"MATCH COMPLETE":"LIVE MATCH"} · SHARED GAME</div><h1 className={game.phase==="ended"?"game-result-title":""}>{game.phase==="ended"?(winner?winner.name+" wins!":"The game was ended."):"Command your tank."}</h1><p>{game.phase==="ended"?(winner?"Last tank standing. Congratulations, "+winner.name+".":"The match was ended manually."):"Every move matters. Choose each action carefully."}</p>{game.phase==="active"&&me?.host&&<button className="danger-button" onClick={()=>{if(window.confirm("End the game for everyone now?"))send({type:"endGame"});}}>End the game <Shield size={16}/></button>}{game.phase==="ended"&&me?.host&&<button className="primary-button reset-match-button" onClick={()=>send({type:"reset"})}>Reset match for another test <RefreshCw size={16}/></button>}</div><div className="game-pills"><span><Users size={15}/> {game.players.length} players</span><span>{game.onlineCount} {game.onlineCount===1?"person":"people"} online</span><span>{game.boardSize} × {game.boardSize} grid</span></div></div>
+      <div className="game-heading"><div><div className="eyebrow">{game.phase==="ended"?"MATCH COMPLETE":"LIVE MATCH"} · SHARED GAME</div><h1 className={game.phase==="ended"?"game-result-title":""}>{game.phase==="ended"?(winner?winner.name+" wins!":"The game was ended."):"Command your tank."}</h1><p>{game.phase==="ended"?(winner?"Last tank standing. Congratulations, "+winner.name+".":"The match was ended manually."):"Every move matters. Choose each action carefully."}</p></div><div className="game-pills"><span><Users size={15}/> {game.players.length} players</span><span>{game.onlineCount} {game.onlineCount===1?"person":"people"} online</span><span>{game.boardSize} × {game.boardSize} grid</span></div></div>
       <div className="game-grid">
         <section className="panel map-panel"><div className="section-title"><div><div className="eyebrow">TACTICAL MAP</div><h2>Battlefield</h2></div><div className="legend"><span><i className="legend-you"/> You</span><span><i className="legend-ally"/> Allies</span><span><i className="legend-enemy"/> Enemies</span><span><i className="legend-rock"/> Obstacle</span></div></div>
           <div className="board-wrap"><div className={"board " + (game.boardSize > 20 ? "board-large" : "")} style={{ gridTemplateColumns: "repeat(" + game.boardSize + ", minmax(0, 1fr))", gridTemplateRows: "repeat(" + game.boardSize + ", minmax(0, 1fr))", gridAutoRows: "minmax(0, 1fr)" }}>{Array.from({ length: game.boardSize * game.boardSize }, (_, i) => {
@@ -505,7 +399,6 @@ export default function App() {
             <div className="stat-grid"><div className="stat-card"><small>HEALTH</small><strong className="hp-number">{me?.hp ?? 0}<i> / 3</i></strong><div className="hearts">{[0,1,2].map(i => <Heart key={i} size={15} fill={i < (me?.hp || 0) ? "currentColor" : "none"}/>)}</div></div><div className="stat-card"><small>ACTION POINTS</small><strong className="ap-number">{game.me.ap}</strong><div className="ap-clock"><BatteryCharging size={13}/> +1 in {game.me.nextApAt ? duration(game.me.nextApAt - now) : "Paused"}</div></div></div>
             <div className="stat-line"><span>Next AP</span><b>{game.me.nextApAt?new Date(game.me.nextApAt).toLocaleString():"Paused"}</b></div>
             {!me?.alive&&game.me.killerName&&<div className="killer-note">Eliminated by <b>{game.me.killerName}</b></div>}
-            {canAct&&<button className="take-turn-button" onClick={()=>send({type:"takeTurn"})} disabled={connection!=="online"}><Zap size={15}/> Take a turn immediately <small>+1 AP · daily timer unchanged</small></button>}
           </section>
           <section className="panel actions-panel"><div className="section-title"><div><div className="eyebrow">COMMANDS</div><h2>Actions</h2></div><small>AP is private</small></div>
             <div className="target-card">{target ? <><div><small>SELECTED PLAYER</small><b>{target.name}{target.id === me?.id ? " · YOU" : ""}</b></div><span className={target.alive ? "alive-tag" : "dead-tag"}>{target.alive ? "ALIVE" : "ELIMINATED"}</span><div className="target-stats">{target.hp} HP <span>({(target.x ?? -1) + 1}, {(target.y ?? -1) + 1})</span></div></> : <div className="no-target"><Crosshair size={17}/> Select a tank on the map or roster.</div>}</div>
@@ -532,13 +425,17 @@ export default function App() {
             <small className="notes-count">{notesDraft.length}/5000 characters</small>
           </section>
           <section className="panel roster-panel"><div className="section-title"><div><div className="eyebrow">FIELD INTELLIGENCE</div><h2>Players</h2></div><small>{game.players.filter(p => p.alive).length} alive</small></div>
-            {game.players.map(p => <div className={"field-row " + (p.id === selectedId ? "focused" : "")} key={p.id}><button className="field-person" onClick={() => setSelectedId(p.id)}><i title={labels[p.id]==="ally"?"Ally":labels[p.id]==="enemy"?"Enemy":"Unmarked"} className={"player-label-dot "+(labels[p.id]||"unmarked")}/><span><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.alive ? p.hp + " HP" : "Eliminated"}</small></span></button><select aria-label={"Label " + p.name} value={labels[p.id] || "unmarked"} onChange={e => updateLabel(p.id, e.target.value as PlayerLabel)}><option value="unmarked">Unmarked</option><option value="ally">Ally</option><option value="enemy">Enemy</option></select></div>)}
+            {game.players.map(p => <div className={"field-row " + (p.id === selectedId ? "focused" : "")} key={p.id}><button className="field-person" onClick={() => setSelectedId(p.id)}><i title={labels[p.id]==="ally"?"Ally":labels[p.id]==="enemy"?"Enemy":"Unmarked"} className={"player-label-dot "+(labels[p.id]||"unmarked")}/><span><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.alive ? p.hp + " HP" : "Eliminated"}</small></span></button><select aria-label={"Label " + p.name} value={labels[p.id] || "unmarked"} onChange={e => updateLabel(p.id, e.target.value as PlayerLabel)}><option value="unmarked">Unmarked</option><option value="ally">Ally</option><option value="enemy">Enemy</option></select>{me?.host&&p.id!==me.id&&game.phase!=="ended"&&<button className="kick-button" onClick={()=>kickPlayer(p)} title={"Remove "+p.name}><UserX size={13}/> Kick</button>}</div>)}
             <p className="micro-note">Green dots mark allies and red dots mark enemies. Labels are private to this browser and do not change damage.</p>
           </section>
+          <section className="panel event-log-panel"><div className="section-title"><div><div className="eyebrow">MATCH HISTORY</div><h2>Public event log</h2></div><small>{game.eventLog.length} events</small></div>
+            <div className="event-log-list">{game.eventLog.length?game.eventLog.slice().reverse().slice(0,200).map(event=><article key={event.id}><time>{new Date(event.at).toLocaleString()}</time><p>{event.message}</p></article>):<small className="muted">No events yet.</small>}</div>
+          </section>
+          {game.phase==="ended"&&me?.host&&<section className="panel notes-archive"><div className="section-title"><div><div className="eyebrow">HOST RECORD</div><h2>Private notes history</h2></div></div><p>Saved revisions from players’ private notes, visible only to the host after the match ends.</p><button className="secondary-button" onClick={loadNotesArchive} disabled={notesArchiveLoading}>{notesArchiveLoading?"Loading…":"Load notes history"}</button>{notesArchive&&<div className="notes-archive-list">{notesArchive.length?notesArchive.map(entry=><article key={entry.id}><div><b>{entry.playerName}</b><time>{new Date(entry.at).toLocaleString()}</time></div><pre>{entry.text||"(cleared notes)"}</pre></article>):<small>No notes were saved this match.</small>}</div>}</section>}
         </aside>
       </div>
       <p className="server-note"><Shield size={14}/> Server-authoritative match · AP and actions are validated by the game server.</p>
     </main>}
-    <footer className="footer">TANK TURN TACTICS <span>·</span> v0.6 · ONE SHARED MATCH</footer>
+    <footer className="footer">TANK TURN TACTICS <span>·</span> SHARED MULTIPLAYER</footer>
   </div>;
 }
