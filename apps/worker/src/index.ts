@@ -249,11 +249,8 @@ export class GameRoom {
     }
     const now = Date.now();
     game.phase = "ended";
-    game.winnerId = null;
     game.endReason = "ended-by-request";
-    game.updatedAt = now;
-    this.recordEvent(game, "manual-end", null);
-    this.updateOnlineCursors(game);
+    this.clearPlayerAccounts(game, now);
     await this.save(game);
     this.broadcast(game);
     return json({ ok: true, ended: true, phase: game.phase });
@@ -297,12 +294,14 @@ export class GameRoom {
       return json({ error: "The shared match has already started. The host must reset it after the match ends before new players can join." }, 409);
     }
     if (game.players.length >= MAX_PLAYERS) return json({ error: "The shared match is full." }, 409);
+    const firstPlayer = game.players.length === 0;
     const player: Player = {
       id: crypto.randomUUID(), token: makeToken(), name: cleanName(body.name),
       color:playerColor(game.players.length),notes:"",killedByName:null,lastSeenEventId:(game.nextEventId||1)-1,replayEvents:[],
       hp: STARTING_HP, ap: STARTING_AP, range: STARTING_RANGE, x: null, y: null,
-      alive: true, host: false, joinedAt: now, nextApAt: null, online: false,
+      alive: true, host: firstPlayer, joinedAt: now, nextApAt: null, online: false,
     };
+    if (firstPlayer) game.hostId = player.id;
     game.players.push(player);
     game.updatedAt = now;
     await this.save(game);
@@ -393,8 +392,8 @@ export class GameRoom {
     if (action.type === "endGame") {
       if (!actor.host) throw new Error("Only the host can end the shared match.");
       if(game.phase!=="active")throw new Error("There is no active match to end.");
-      game.phase="ended";game.winnerId=null;game.endReason="ended-by-host";
-      this.recordEvent(game,"manual-end",actor);return;
+      game.phase="ended";game.endReason="ended-by-host";
+      this.clearPlayerAccounts(game, now);return;
     }
     if (action.type === "setColor") {
       if(game.phase!=="lobby")throw new Error("Tank colors can only be changed in the lobby.");
@@ -466,8 +465,9 @@ export class GameRoom {
           this.recordEvent(game,"attack",actor,target,{killed:true});
           const alive=game.players.filter(p=>p.alive);
           if(alive.length===1){
-            game.phase="ended";game.winnerId=alive[0].id;game.endReason="last-player-standing";
+            game.phase="ended";game.endReason="last-player-standing";
             this.recordEvent(game,"match-end",null,alive[0]);
+            this.clearPlayerAccounts(game, now);
           }
         } else {
           this.recordEvent(game,"attack",actor,target,{killed:false});
@@ -542,18 +542,23 @@ export class GameRoom {
   private resetGame(game: GameState, now: number): void {
     game.phase = "lobby";
     game.startedAt = null;
-    game.updatedAt = now;
-    game.winnerId = null;game.endReason=null;
+    game.endReason = null;
+    this.clearPlayerAccounts(game, now);
+  }
+
+  private clearPlayerAccounts(game: GameState, now: number): void {
+    // Ended matches must not carry old accounts, recovery tokens, or host ownership
+    // into the next playtest. The next person to join the reset lobby becomes host.
+    game.players = [];
+    game.hostId = "";
+    game.winnerId = null;
     game.obstacles = [];
     game.juryCycleEndsAt = null;
     game.juryVotes = {};
-    game.notesHistory=[];game.events=[];game.nextEventId=1;
-    for (const player of game.players) {
-      player.hp = STARTING_HP;
-      player.ap = STARTING_AP;
-      player.range = STARTING_RANGE;player.x=null;player.y=null;player.alive=true;
-      player.notes="";player.killedByName=null;player.lastSeenEventId=0;player.replayEvents=[];player.nextApAt=null;
-    }
+    game.notesHistory = [];
+    game.events = [];
+    game.nextEventId = 1;
+    game.updatedAt = now;
   }
 
   private spend(player: Player, amount: number): void {
@@ -622,7 +627,7 @@ export class GameRoom {
       const session = socket.deserializeAttachment() as { playerId: string; token: string } | null;
       if (!session) continue;
       const player = game.players.find((p) => p.id === session.playerId && p.token === session.token);
-      if (!player) { socket.close(1008, "Session expired"); continue; }
+      if (!player) { socket.close(1008, "Player accounts cleared."); continue; }
       try { socket.send(JSON.stringify({ type: "state", state: this.publicState(game, player) })); }
       catch { /* closed socket */ }
     }
