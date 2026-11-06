@@ -227,7 +227,7 @@ export default function App() {
     setResettingPublicMatch(true);
     setError("");
     try {
-      const result = await api("/api/game/reset", {});
+      const result = await api("/api/game/end", { action: "reset" });
       if (!result.reset) throw new Error(result.error || "The match could not be reset.");
       setLandingPhase("lobby");
       setLandingPlayerCount(typeof result.players === "number" ? result.players : landingPlayerCount);
