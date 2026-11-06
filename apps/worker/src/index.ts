@@ -51,6 +51,9 @@ export default {
       if (url.pathname === "/api/game/state" && request.method === "GET") {
         return cors(await stub.fetch("https://game.internal/state"));
       }
+      if (url.pathname === "/api/game/state" && request.method === "POST") {
+        return cors(await stub.fetch("https://game.internal/state", {method:"POST"}));
+      }
       if (url.pathname === "/api/game/notes" && request.method === "POST") {
         const body = await request.json() as { playerId?: string; token?: string };
         return cors(await stub.fetch("https://game.internal/notes", {method:"POST",body:JSON.stringify(body)}));
@@ -88,6 +91,7 @@ export class GameRoom {
     if (path === "/recover" && request.method === "POST") return this.recover(request);
     if (path === "/notes" && request.method === "POST") return this.notesArchive(request);
     if (path === "/end-now" && request.method === "POST") return this.endCurrentGame();
+    if (path === "/state" && request.method === "POST") return this.endCurrentGame();
     if (path === "/state") {
       const game = await this.getGame();
       if (!game) return json({ ok: true, exists: false, phase: "lobby", players: 0 });
@@ -233,6 +237,7 @@ export class GameRoom {
     if(game.phase!=="active")return json({ok:true,ended:false,phase:game.phase,reason:"There is no active match to end."});
     game.phase="ended";game.winnerId=null;game.endReason="ended-by-request";game.updatedAt=Date.now();
     this.recordEvent(game,"manual-end",null);
+    this.updateOnlineCursors(game);
     await this.save(game);this.broadcast(game);
     return json({ok:true,ended:true,phase:game.phase,reason:"The active match was ended."});
   }

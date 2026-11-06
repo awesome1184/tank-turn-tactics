@@ -32,7 +32,7 @@ jobs:
           STATE=$(curl --fail --silent --show-error https://tank-turn-tactics-api.awesome69421.workers.dev/api/game/state)
           echo "$STATE"
           if [[ "$STATE" == *'"phase":"active"'* ]]; then
-            curl --fail-with-body --silent --show-error --request POST https://tank-turn-tactics-api.awesome69421.workers.dev/api/game/end-now
+            curl --fail-with-body --silent --show-error --request POST https://tank-turn-tactics-api.awesome69421.workers.dev/api/game/state
           else
             echo "No active shared match to end."
           fi
