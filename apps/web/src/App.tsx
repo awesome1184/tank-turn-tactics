@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BatteryCharging, Bug, ChevronRight, Copy, Crosshair, Download, Heart, KeyRound, Move, RefreshCw, Shield, Skull, Swords, Users, Zap } from "lucide-react";
 import { MAP_SIZES, MAX_PLAYERS } from "../../../packages/shared/src/contracts";
-import type { NoteHistoryEntry, PlayerLabel, PublicGameState, PublicPlayer, PublicReplayEvent } from "../../../packages/shared/src/contracts";
+import type { NoteHistoryEntry, PlayerLabel, PublicGameState, PublicPlayer, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
 
 const API_BASE = (import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "https://tank-turn-tactics-api.awesome69421.workers.dev")).replace(/\/$/, "");
 const SESSION_KEY = "tank-turn-tactics-session-v2";
@@ -54,6 +54,26 @@ function duration(ms: number): string {
   const s = Math.ceil(ms / 1000), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
   return d ? d + "d " + h + "h " + m + "m" : h + "h " + m + "m " + sec + "s";
 }
+function estimateMoveCost(game:PublicGameState,playerId:string,targetX:number,targetY:number):number|null {
+  const actor=game.players.find(player=>player.id===playerId);
+  if(!actor||actor.x===null||actor.y===null)return null;
+  const blocked=new Set(game.obstacles.map(([x,y])=>x+","+y));
+  for(const player of game.players)if(player.id!==actor.id&&player.x!==null&&player.y!==null)blocked.add(player.x+","+player.y);
+  const key=(x:number,y:number)=>x+","+y;
+  const queue:Array<[number,number]>=[[actor.x,actor.y]];
+  const distances=new Map<string,number>([[key(actor.x,actor.y),0]]);
+  const directions:Array<[number,number]>=[[0,-1],[1,0],[0,1],[-1,0],[1,-1],[1,1],[-1,1],[-1,-1]];
+  for(let head=0;head<queue.length;head++){
+    const [x,y]=queue[head],distance=distances.get(key(x,y))||0;
+    if(x===targetX&&y===targetY)return distance;
+    for(const [dx,dy] of directions){
+      const nx=x+dx,ny=y+dy,next=key(nx,ny);
+      if(nx<0||ny<0||nx>=game.boardSize||ny>=game.boardSize||blocked.has(next)||distances.has(next))continue;
+      distances.set(next,distance+1);queue.push([nx,ny]);
+    }
+  }
+  return null;
+}
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(() => savedSession());
@@ -64,6 +84,8 @@ export default function App() {
   const [name, setName] = useState("");
   const [mode, setMode] = useState<"join" | "recover">("join");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedMove, setSelectedMove] = useState<{x:number;y:number;cost:number}|null>(null);
+  const [moveConfirmationOpen, setMoveConfirmationOpen] = useState(false);
   const [labels, setLabels] = useState<Labels>({});
   const [juryTarget, setJuryTarget] = useState("");
   const [notesDraft, setNotesDraft] = useState("");
@@ -128,7 +150,7 @@ export default function App() {
 
   useEffect(() => {
     if (!session) {
-      setGame(null);setConnection("offline");notesDirtyRef.current=false;notesDraftRef.current="";setNotesDraft("");setNotesArchive(null);setReplayEvents([]);setReplayIndex(0);return;
+      setGame(null);setConnection("offline");notesDirtyRef.current=false;notesDraftRef.current="";setNotesDraft("");setNotesArchive(null);setReplayEvents([]);setReplayIndex(0);setSelectedMove(null);setMoveConfirmationOpen(false);return;
     }
     if (!API_BASE) { setError("Server URL is not configured. See README.md."); setConnection("offline"); return; }
     setLabels(readLabels(session.playerId));
@@ -301,10 +323,51 @@ export default function App() {
     catch { setError("Clipboard access was blocked. Try the browser's secure-site permissions."); }
   };
   const me = game?.players.find((p) => p.id === session?.playerId);
+  const winner = game?.winnerId ? game.players.find((p) => p.id === game.winnerId) : undefined;
   const target = game?.players.find((p) => p.id === selectedId);
   const canAct = game?.phase === "active" && !!me?.alive;
   const obstacles = useMemo(() => new Set(game?.obstacles.map(([x, y]) => x + "," + y) || []), [game?.obstacles]);
   const occupants = useMemo(() => new Map<string, PublicPlayer>((game?.players || []).filter((p) => p.x !== null && p.y !== null).map((p): [string, PublicPlayer] => [String(p.x) + "," + String(p.y), p])), [game?.players]);
+  const replayMap = useMemo(() => {
+    const visible=replayEvents.slice(0,replayIndex+1);
+    const anchor=visible.findIndex(event=>!!event.mapSnapshot);
+    if(anchor<0)return null;
+    const base=visible[anchor].mapSnapshot as ReplayMapSnapshot;
+    const map:ReplayMapSnapshot={boardSize:base.boardSize,obstacles:base.obstacles.map(([x,y])=>[x,y]),players:base.players.map(player=>({...player}))};
+    for(const event of visible.slice(anchor)){
+      if(event.type==="move"&&event.actorId&&event.x!==undefined&&event.y!==undefined){
+        const player=map.players.find(item=>item.id===event.actorId);
+        if(player){player.x=event.x;player.y=event.y;}
+      } else if(event.type==="attack"&&event.killed&&event.targetId){
+        const target=map.players.find(item=>item.id===event.targetId);
+        if(target)target.alive=false;
+      } else if(event.type==="gift-heart"&&event.targetId){
+        const target=map.players.find(item=>item.id===event.targetId);
+        if(target)target.alive=true;
+      }
+    }
+    return map;
+  },[replayEvents,replayIndex]);
+  const replayObstacles=useMemo(()=>new Set(replayMap?.obstacles.map(([x,y])=>x+","+y)||[]),[replayMap]);
+  const replayOccupants=useMemo(()=>new Map((replayMap?.players||[]).filter(player=>player.x!==null&&player.y!==null).map(player=>[player.x+","+player.y,player])),[replayMap]);
+  const selectedMoveCost=selectedMove&&game&&session?estimateMoveCost(game,session.playerId,selectedMove.x,selectedMove.y):null;
+  const handleTileClick=(x:number,y:number)=>{
+    const occupant=occupants.get(x+","+y);
+    if(occupant){setSelectedMove(null);setMoveConfirmationOpen(false);setSelectedId(occupant.id);return;}
+    if(!canAct||!game||!session||obstacles.has(x+","+y))return;
+    if(selectedMove?.x===x&&selectedMove?.y===y){setMoveConfirmationOpen(true);return;}
+    const cost=estimateMoveCost(game,session.playerId,x,y);
+    if(cost===null){setSelectedMove(null);setMoveConfirmationOpen(false);setError("That tile cannot be reached.");return;}
+    setError("");setSelectedId(null);setSelectedMove({x,y,cost});setMoveConfirmationOpen(false);
+  };
+  const confirmMove=()=>{
+    if(!selectedMove||!game||!session)return;
+    const cost=estimateMoveCost(game,session.playerId,selectedMove.x,selectedMove.y);
+    if(cost===null){setError("That tile can no longer be reached.");setMoveConfirmationOpen(false);setSelectedMove(null);return;}
+    if(game.me.ap<cost){setError("Not enough AP. You need "+cost+", and have "+game.me.ap+".");return;}
+    send({type:"move",x:selectedMove.x,y:selectedMove.y});
+    setSelectedMove(null);setMoveConfirmationOpen(false);
+  };
   const updateLabel = (id: string, label: PlayerLabel) => {
     const next = { ...labels, [id]: label };
     setLabels(next);
@@ -351,7 +414,7 @@ export default function App() {
             </button>
           )}
         </div>
-        <div className="card-foot"><KeyRound size={14}/> Recovery keys work only for the current match. All accounts and keys are cleared when the match ends.</div>
+        <div className="card-foot"><KeyRound size={14}/> Recovery keys remain valid while the result is displayed. Resetting the match clears every old account and key.</div>
       </section>
     </main><footer className="landing-foot">16 × 16 TO 32 × 32 MAPS <span>•</span> UP TO {MAX_PLAYERS} PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
   </div>;
@@ -392,10 +455,12 @@ export default function App() {
       <small className="debug-note">Diagnostics do not include your recovery token or API credentials.</small>
     </section>}
     {error && <div className="toast">{error}<button onClick={() => setError("")}>×</button></div>}
+    {moveConfirmationOpen&&selectedMove&&<div className="move-confirm-overlay" role="dialog" aria-modal="true" aria-label="Confirm movement" onClick={event=>{if(event.target===event.currentTarget){setMoveConfirmationOpen(false);}}}><section className="move-confirm-card"><div className="eyebrow">CONFIRM MOVEMENT</div><h2>Move to ({selectedMove.x+1}, {selectedMove.y+1})?</h2><p>This move will spend <strong>{selectedMoveCost===null?selectedMove.cost:selectedMoveCost} AP</strong>.</p>{selectedMoveCost===null?<small className="move-warning">That destination can no longer be reached.</small>:game&&game.me.ap<selectedMoveCost?<small className="move-warning">You only have {game.me.ap} AP available.</small>:null}<div className="move-confirm-actions"><button className="secondary-button" onClick={()=>setMoveConfirmationOpen(false)}>Cancel</button><button className="primary-button" disabled={selectedMoveCost===null||!game||game.me.ap<selectedMoveCost} onClick={confirmMove}>Confirm move · {selectedMoveCost===null?selectedMove.cost:selectedMoveCost} AP</button></div></section></div>}
     {replayEvents.length>0&&<div className="replay-overlay" role="dialog" aria-modal="true" aria-label="While you were gone replay">
       <section className="replay-card"><div className="replay-heading"><div><div className="eyebrow">WHILE YOU WERE GONE</div><h2>Match replay</h2></div><small>{replayIndex+1} / {replayEvents.length}</small></div>
         <time>{new Date(replayEvents[replayIndex].at).toLocaleString()}</time>
-        <p className="replay-message">{replayEvents[replayIndex].message}</p>
+        {replayMap&&<div className="replay-map-wrap"><div className="replay-map" style={{gridTemplateColumns:"repeat("+replayMap.boardSize+",minmax(0,1fr))",gridTemplateRows:"repeat("+replayMap.boardSize+",minmax(0,1fr))"}}>{Array.from({length:replayMap.boardSize*replayMap.boardSize},(_,i)=>{const x=i%replayMap.boardSize,y=Math.floor(i/replayMap.boardSize),player=replayOccupants.get(x+","+y),rock=replayObstacles.has(x+","+y);return <div key={x+"-"+y} className={"replay-map-tile "+(rock?"rock":"")+(player?" occupied":"")} title={player?player.name:rock?"Obstacle":"Empty tile"}>{rock?<span>◆</span>:player?<span className={"replay-map-tank "+(!player.alive?"eliminated":"")} style={{color:player.color}}>{player.alive?"▰":"✕"}</span>:null}</div>;})}</div><small>Battlefield replay</small></div>}
+        <p className={"replay-message "+(replayEvents[replayIndex].type==="match-end"?"replay-winner-message":"")}>{replayEvents[replayIndex].message}</p>
         <div className="replay-progress"><i style={{width:((replayIndex+1)/replayEvents.length*100)+"%"}}/></div>
         <div className="replay-footer"><small>Each event advances every 1.5 seconds.</small><button className="secondary-button" onClick={skipReplay}>Skip replay</button></div>
       </section>
@@ -423,17 +488,17 @@ export default function App() {
       </section>
     </main> :
     <main className="game-main">
-      <div className="game-heading"><div><div className="eyebrow">{game.phase==="ended"?"MATCH COMPLETE":"LIVE MATCH"} · SHARED GAME</div><h1>{game.phase==="ended"?(game.endReason==="ended-by-request"||game.endReason==="ended-by-host"?"The game was ended.":"The dust has settled."):"Command your tank."}</h1><p>{game.phase==="ended"?(game.winnerId?(game.players.find(p=>p.id===game.winnerId)?.name||"A player")+" is the last tank standing.":"The match was ended manually."):"Every move matters. Choose each action carefully."}</p>{game.phase==="active"&&me?.host&&<button className="danger-button" onClick={()=>{if(window.confirm("End the game for everyone now?"))send({type:"endGame"});}}>End the game <Shield size={16}/></button>}{game.phase==="ended"&&me?.host&&<button className="primary-button reset-match-button" onClick={()=>send({type:"reset"})}>Reset match for another test <RefreshCw size={16}/></button>}</div><div className="game-pills"><span><Users size={15}/> {game.players.length} players</span><span>{game.onlineCount} {game.onlineCount===1?"person":"people"} online</span><span>{game.boardSize} × {game.boardSize} grid</span></div></div>
+      <div className="game-heading"><div><div className="eyebrow">{game.phase==="ended"?"MATCH COMPLETE":"LIVE MATCH"} · SHARED GAME</div><h1 className={game.phase==="ended"?"game-result-title":""}>{game.phase==="ended"?(winner?winner.name+" wins!":"The game was ended."):"Command your tank."}</h1><p>{game.phase==="ended"?(winner?"Last tank standing. Congratulations, "+winner.name+".":"The match was ended manually."):"Every move matters. Choose each action carefully."}</p>{game.phase==="active"&&me?.host&&<button className="danger-button" onClick={()=>{if(window.confirm("End the game for everyone now?"))send({type:"endGame"});}}>End the game <Shield size={16}/></button>}{game.phase==="ended"&&me?.host&&<button className="primary-button reset-match-button" onClick={()=>send({type:"reset"})}>Reset match for another test <RefreshCw size={16}/></button>}</div><div className="game-pills"><span><Users size={15}/> {game.players.length} players</span><span>{game.onlineCount} {game.onlineCount===1?"person":"people"} online</span><span>{game.boardSize} × {game.boardSize} grid</span></div></div>
       <div className="game-grid">
-        <section className="panel map-panel"><div className="section-title"><div><div className="eyebrow">TACTICAL MAP</div><h2>Battlefield</h2></div><div className="legend"><span><i className="legend-you"/> You</span><span><i className="legend-player"/> Player</span><span><i className="legend-rock"/> Obstacle</span></div></div>
-          <div className="board-wrap"><div className={"board " + (game.boardSize > 20 ? "board-large" : "")} style={{ gridTemplateColumns: "repeat(" + game.boardSize + ", minmax(0, 1fr))" }}>{Array.from({ length: game.boardSize * game.boardSize }, (_, i) => {
+        <section className="panel map-panel"><div className="section-title"><div><div className="eyebrow">TACTICAL MAP</div><h2>Battlefield</h2></div><div className="legend"><span><i className="legend-you"/> You</span><span><i className="legend-ally"/> Allies</span><span><i className="legend-enemy"/> Enemies</span><span><i className="legend-rock"/> Obstacle</span></div></div>
+          <div className="board-wrap"><div className={"board " + (game.boardSize > 20 ? "board-large" : "")} style={{ gridTemplateColumns: "repeat(" + game.boardSize + ", minmax(0, 1fr))", gridTemplateRows: "repeat(" + game.boardSize + ", minmax(0, 1fr))", gridAutoRows: "minmax(0, 1fr)" }}>{Array.from({ length: game.boardSize * game.boardSize }, (_, i) => {
             const x=i%game.boardSize,y=Math.floor(i/game.boardSize),p=occupants.get(x+","+y),rock=obstacles.has(x+","+y);
             const inMyRange=me?.x!==null&&me?.x!==undefined&&me?.y!==null&&me?.y!==undefined&&Math.max(Math.abs(x-me.x),Math.abs(y-me.y))<=game.me.range;
-            return <button key={x+"-"+y} className={"tile "+(inMyRange?"range-tile ":"outside-range-tile ")+(rock?"rock-tile ":"")+(p?"occupied ":"")+(p?.id===session.playerId?"self-tile ":"")+(p?.id===selectedId?"selected ":"")+(p&&!p.alive?"dead-tile":"")} title={p?p.name+" · "+p.hp+" HP":rock?"Obstacle":"Tile "+(x+1)+", "+(y+1)} onClick={()=>p?setSelectedId(p.id):canAct&&!rock&&send({type:"move",x,y})}>
-              {rock?<span className="rock">◆</span>:p?<><span className="tank" style={{color:p.color}}>{p.alive?"▰":"✕"}</span>{p.id!==session.playerId&&<span className={"tank-state-dot "+(p.alive?"alive":"dead")}/>}{game.boardSize<=20&&<span className="tile-label">{p.name.slice(0,6)}</span>}</>:null}
+            return <button key={x+"-"+y} className={"tile "+(inMyRange?"range-tile ":"outside-range-tile ")+(rock?"rock-tile ":"")+(p?"occupied ":"")+(p?.id===session.playerId?"self-tile ":"")+(p?.id===selectedId?"selected ":"")+(selectedMove?.x===x&&selectedMove?.y===y?"selected-move":"")} title={p?p.name+" · "+p.hp+" HP":rock?"Obstacle":canAct?"Tile "+(x+1)+", "+(y+1)+(selectedMove?.x===x&&selectedMove?.y===y?" · selected destination · "+selectedMove.cost+" AP":" · click to select"):"Tile "+(x+1)+", "+(y+1)} onClick={()=>handleTileClick(x,y)}>
+              {rock?<span className="rock">◆</span>:p?<><span className="tank" style={{color:p.color}}>{p.alive?"▰":"✕"}</span>{(labels[p.id]==="ally"||labels[p.id]==="enemy")&&<span className={"tank-label-dot "+labels[p.id]}/ >}{game.boardSize<=20&&<span className="tile-label">{p.name.slice(0,6)}</span>}</>:null}
             </button>;
           })}</div></div>
-          <div className="map-help"><span><Move size={14}/> Click an empty tile to move (AP per step).</span><span>8 directions</span></div>
+          <div className="map-help"><span><Move size={14}/> Click a destination to outline it, then click it again to review the AP cost.</span><span>8 directions</span></div>
         </section>
         <aside className="side-column">
           <section className="panel stats-panel"><div className="eyebrow">YOUR TANK</div><h2>{me?.name || session.name}</h2><div className="tank-status">{me?.alive ? "Active tank" : "Jury · eliminated"}</div>
@@ -467,8 +532,8 @@ export default function App() {
             <small className="notes-count">{notesDraft.length}/5000 characters</small>
           </section>
           <section className="panel roster-panel"><div className="section-title"><div><div className="eyebrow">FIELD INTELLIGENCE</div><h2>Players</h2></div><small>{game.players.filter(p => p.alive).length} alive</small></div>
-            {game.players.map(p => <div className={"field-row " + (p.id === selectedId ? "focused" : "")} key={p.id}><button className="field-person" onClick={() => setSelectedId(p.id)}><i className={p.id === session.playerId ? "you-dot" : p.alive ? "player-dot" : "dead-dot"}/><span><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.alive ? p.hp + " HP" : "Eliminated"}</small></span></button><select aria-label={"Label " + p.name} value={labels[p.id] || "unmarked"} onChange={e => updateLabel(p.id, e.target.value as PlayerLabel)}><option value="unmarked">Unmarked</option><option value="ally">Ally</option><option value="enemy">Enemy</option></select></div>)}
-            <p className="micro-note">Labels are private notes saved in this browser. They do not create teams or change damage.</p>
+            {game.players.map(p => <div className={"field-row " + (p.id === selectedId ? "focused" : "")} key={p.id}><button className="field-person" onClick={() => setSelectedId(p.id)}><i title={labels[p.id]==="ally"?"Ally":labels[p.id]==="enemy"?"Enemy":"Unmarked"} className={"player-label-dot "+(labels[p.id]||"unmarked")}/><span><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.alive ? p.hp + " HP" : "Eliminated"}</small></span></button><select aria-label={"Label " + p.name} value={labels[p.id] || "unmarked"} onChange={e => updateLabel(p.id, e.target.value as PlayerLabel)}><option value="unmarked">Unmarked</option><option value="ally">Ally</option><option value="enemy">Enemy</option></select></div>)}
+            <p className="micro-note">Green dots mark allies and red dots mark enemies. Labels are private to this browser and do not change damage.</p>
           </section>
         </aside>
       </div>

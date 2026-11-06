@@ -2,7 +2,7 @@ import {
   BOARD_SIZE, MAP_SIZES, DAILY_AP_INTERVAL_MS, MAX_HP, MAX_PLAYERS,
   RANGE_UPGRADE_COST, STARTING_AP, STARTING_HP, STARTING_RANGE, chebyshevDistance,
 } from "../../../packages/shared/src/contracts";
-import type { ClientAction, GameState, MatchEvent, Player, PublicGameState, PublicReplayEvent } from "../../../packages/shared/src/contracts";
+import type { ClientAction, GameState, MatchEvent, Player, PublicGameState, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
 
 export interface Env { ROOMS: DurableObjectNamespace; }
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
@@ -195,11 +195,55 @@ export class GameRoom {
     const event:MatchEvent={id,at:Date.now(),type,actorId:actor?.id??null,actorName:actor?.name??null,...(target?{targetId:target.id,targetName:target.name}:{}),...extra};
     game.nextEventId=id+1;
     game.events.push(event);
-    if(game.events.length>3000)game.events.splice(0,game.events.length-3000);
+    if(game.events.length>3000){
+      const start=game.events.find(item=>item.type==="match-start");
+      const recent=game.events.filter(item=>item!==start);
+      recent.splice(0,Math.max(0,recent.length-(start?2999:3000)));
+      game.events=start?[start,...recent]:recent;
+    }
+  }
+
+  private captureReplayMap(game:GameState):ReplayMapSnapshot {
+    return {
+      boardSize:game.boardSize,
+      obstacles:game.obstacles.map(([x,y])=>[x,y]),
+      players:game.players.map(({id,name,color,x,y,alive})=>({id,name,color,x,y,alive})),
+    };
+  }
+
+  private applyReplayMapEvent(snapshot:ReplayMapSnapshot,event:MatchEvent):void {
+    if(event.type==="move"&&event.actorId&&event.x!==undefined&&event.y!==undefined){
+      const player=snapshot.players.find(item=>item.id===event.actorId);
+      if(player){player.x=event.x;player.y=event.y;}
+    } else if(event.type==="attack"&&event.killed&&event.targetId){
+      const target=snapshot.players.find(item=>item.id===event.targetId);
+      if(target)target.alive=false;
+    } else if(event.type==="gift-heart"&&event.targetId){
+      const target=snapshot.players.find(item=>item.id===event.targetId);
+      if(target)target.alive=true;
+    }
+  }
+
+  private replayMapAt(game:GameState,eventId:number):ReplayMapSnapshot|undefined {
+    const start=game.events.find(item=>item.type==="match-start"&&item.mapSnapshot);
+    if(!start?.mapSnapshot)return undefined;
+    const snapshot:ReplayMapSnapshot={
+      boardSize:start.mapSnapshot.boardSize,
+      obstacles:start.mapSnapshot.obstacles.map(([x,y])=>[x,y]),
+      players:start.mapSnapshot.players.map(player=>({...player})),
+    };
+    for(const event of game.events){
+      if(event.id<=start.id)continue;
+      if(event.id>eventId)break;
+      this.applyReplayMapEvent(snapshot,event);
+    }
+    return snapshot;
   }
 
   private replayFor(player:Player):PublicReplayEvent[] {
-    return (player.replayEvents||[]).map(event=>{
+    const output:PublicReplayEvent[]=[];
+    let initialMap=player.replayMapSnapshot;
+    for(const event of player.replayEvents||[]){
       const actor=event.actorName||"A player", target=event.targetName||"A player";
       let message:string|null=null;
       switch(event.type){
@@ -219,8 +263,18 @@ export class GameRoom {
         case "daily-ap": message=event.actorId===player.id?`You received ${event.amount||1} AP from the daily timer.`:null; break;
         case "match-end": message=event.targetName?`${target} wins!`:"The match ended."; break;
       }
-      return message?{id:event.id,at:event.at,message}:null;
-    }).filter((event):event is PublicReplayEvent=>event!==null);
+      if(!message)continue;
+      output.push({
+        id:event.id,at:event.at,message,type:event.type,actorId:event.actorId,
+        ...(event.targetId?{targetId:event.targetId}:{}),
+        ...(event.x!==undefined?{x:event.x}:{}),
+        ...(event.y!==undefined?{y:event.y}:{}),
+        ...(event.killed!==undefined?{killed:event.killed}:{}),
+        ...(initialMap?{mapSnapshot:initialMap}:event.mapSnapshot?{mapSnapshot:event.mapSnapshot}:{}),
+      });
+      initialMap=undefined;
+    }
+    return output;
   }
 
   private updateOnlineCursors(game:GameState):void {
@@ -332,8 +386,14 @@ export class GameRoom {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("Expected WebSocket", { status: 426 });
     this.applyDailyAp(game,Date.now());
     const wasOnline=player.online;
-    if(!wasOnline) player.replayEvents=game.events.filter(event=>event.id>(player.lastSeenEventId||0));
-    else player.replayEvents=[];
+    if(!wasOnline){
+      const lastSeen=player.lastSeenEventId||0;
+      player.replayEvents=game.events.filter(event=>event.id>lastSeen);
+      player.replayMapSnapshot=player.replayEvents.length?this.replayMapAt(game,lastSeen):undefined;
+    } else {
+      player.replayEvents=[];
+      player.replayMapSnapshot=undefined;
+    }
     const pair = new WebSocketPair(), client = pair[0], server = pair[1];
     this.state.acceptWebSocket(server, [player.id]);
     server.serializeAttachment({ playerId, token });
@@ -389,6 +449,7 @@ export class GameRoom {
       const last=Number(action.lastEventId);
       if(Number.isInteger(last)) actor.lastSeenEventId=Math.max(actor.lastSeenEventId,Math.min(last,latest));
       actor.replayEvents=[];
+      actor.replayMapSnapshot=undefined;
       return;
     }
     if (action.type === "endGame") {
@@ -467,7 +528,7 @@ export class GameRoom {
           this.recordEvent(game,"attack",actor,target,{killed:true});
           const alive=game.players.filter(p=>p.alive);
           if(alive.length===1){
-            game.phase="ended";game.endReason="last-player-standing";
+            game.phase="ended";game.winnerId=alive[0].id;game.endReason="last-player-standing";
             this.recordEvent(game,"match-end",null,alive[0]);
           }
         } else {
@@ -536,8 +597,8 @@ export class GameRoom {
       player.range = STARTING_RANGE; player.alive = true; player.killedByName=null; player.nextApAt = now + DAILY_AP_INTERVAL_MS;
     }
     game.events=[];game.nextEventId=1;
-    for(const player of game.players){player.lastSeenEventId=0;player.replayEvents=[];}
-    this.recordEvent(game,"match-start",null);
+    for(const player of game.players){player.lastSeenEventId=0;player.replayEvents=[];player.replayMapSnapshot=undefined;}
+    this.recordEvent(game,"match-start",null,undefined,{mapSnapshot:this.captureReplayMap(game)});
   }
 
   private resetGame(game: GameState, now: number): void {
