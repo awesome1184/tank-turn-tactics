@@ -3,9 +3,9 @@
 The game has two separately hosted pieces:
 
 - **Web client:** GitHub Pages at https://awesome1184.github.io/tank-turn-tactics/
-- **Multiplayer API:** Cloudflare Worker named `tank-turn-tactics-api`, with one SQLite-backed Durable Object per room.
+- **Multiplayer API:** Cloudflare Worker named `tank-turn-tactics-api`, with one SQLite-backed Durable Object for the single shared match.
 
-The repository already contains the Worker configuration and GitHub Actions workflow. You do not need to create a Durable Object namespace by hand; the first Wrangler deployment registers the `GameRoom` class from `apps/worker/wrangler.jsonc`.
+The repository already contains the Worker configuration and GitHub Actions workflow. You do not need to create a Durable Object namespace by hand; the first Wrangler deployment registers the GameRoom class. The application uses one fixed Durable Object ID named shared-game-v1. All tabs join the same game; separate lobbies and lobby codes do not exist. The first player becomes host.
 
 ## 1. Create a Cloudflare account
 
@@ -49,12 +49,13 @@ Do not put either value in a normal repository variable or commit it into a file
 
 In GitHub, open **Actions → Deploy server → Run workflow** and run it on `main`.
 
-The workflow installs the project dependencies and runs `wrangler deploy` using those two secrets. The Wrangler configuration creates or updates:
+The workflow installs the project dependencies, runs typechecks, and deploys with wrangler deploy using those two secrets. The Wrangler configuration creates or updates:
 
 - Worker: `tank-turn-tactics-api`
 - Durable Object binding: `ROOMS`
 - Durable Object class: `GameRoom`
-- SQLite migration: `v1`
+- Shared game ID: shared-game-v1
+- SQLite migration: v1
 
 When the deployment completes, open **Cloudflare → Workers & Pages → tank-turn-tactics-api** and copy its `workers.dev` URL. It will look like:
 
@@ -92,7 +93,15 @@ This is a public URL, not a secret; the web client needs it at build time.
 
 Then open **Actions → Deploy web client → Run workflow** and run it on `main`. This rebuilds the browser client with the Worker URL embedded. Refresh the game page after the Pages deployment succeeds.
 
-## 7. Free plan and capacity notes
+## 7. Multi-tab playtesting
+
+Open the GitHub Pages URL in each tab. The first player to join creates the shared lobby and becomes host. Each tab stores its own player session in sessionStorage, so it can reload without switching to another tab's player. The top-bar New player tab control opens another tab for a new player.
+
+Join all test players before starting the match. New players cannot join after the match starts. When a match ends, the host can reset it; this returns the existing roster to the lobby with HP, AP, range, positions, and jury state reset, while keeping each tab's player identity and recovery key.
+
+There is only one game at a time. No lobby codes, separate rooms, or chat are used.
+
+## 8. Free plan and capacity notes
 
 The Worker is configured to use SQLite-backed Durable Objects, which Cloudflare supports on Workers Free and Paid plans. Current Free-plan Durable Object allowances include 100,000 requests and 13,000 GB-seconds of compute duration per day; incoming WebSocket messages use a 20:1 request-billing ratio, while outgoing WebSocket messages are not billed as requests. Limits reset daily, and operations of a type can fail after that type's free allowance is exceeded. Keep an eye on usage during larger playtests.
 

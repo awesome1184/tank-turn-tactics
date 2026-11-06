@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpRight, BatteryCharging, Bug, ChevronRight, Copy, Crosshair, Download, Heart, KeyRound, MessageCircle, Move, RefreshCw, Shield, Skull, Swords, Users, Zap } from "lucide-react";
+import { BatteryCharging, Bug, ChevronRight, Copy, Crosshair, Download, Heart, KeyRound, Move, RefreshCw, Shield, Skull, Swords, Users, Zap } from "lucide-react";
 import { MAP_SIZES, MAX_PLAYERS } from "../../../packages/shared/src/contracts";
-import type { ChatMessage, PlayerLabel, PublicGameState, PublicPlayer } from "../../../packages/shared/src/contracts";
+import type { PlayerLabel, PublicGameState, PublicPlayer } from "../../../packages/shared/src/contracts";
 
 const API_BASE = (import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "https://tank-turn-tactics-api.awesome69421.workers.dev")).replace(/\/$/, "");
-const SESSION_KEY = "tank-turn-tactics-session-v1";
-type Session = { code: string; playerId: string; token: string; name: string };
+const SESSION_KEY = "tank-turn-tactics-session-v2";
+type Session = { playerId: string; token: string; name: string };
 type Labels = Record<string, PlayerLabel>;
 
 async function api(path: string, body?: unknown): Promise<any> {
@@ -20,34 +20,33 @@ async function api(path: string, body?: unknown): Promise<any> {
   return data;
 }
 function savedSession(): Session | null {
-  try { return JSON.parse(localStorage.getItem(SESSION_KEY) || "null") as Session | null; }
+  try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null") as Session | null; }
   catch { return null; }
 }
 function makeRecoveryKey(session: Session): string {
-  const payload = JSON.stringify({ version: 1, code: session.code, playerId: session.playerId, token: session.token });
+  const payload = JSON.stringify({ version: 2, playerId: session.playerId, token: session.token });
   const bytes = new TextEncoder().encode(payload);
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   const encoded = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-  return "TTT1." + encoded;
+  return "TTT2." + encoded;
 }
-function readRecoveryKey(value: string): { code: string; playerId: string; token: string } {
+function readRecoveryKey(value: string): { playerId: string; token: string } {
   const key = value.trim();
-  if (!key.startsWith("TTT1.") || key.length > 2048) throw new Error("Paste a valid Tank Turn Tactics recovery key.");
+  if (!key.startsWith("TTT2.") || key.length > 2048) throw new Error("Paste a valid Tank Turn Tactics recovery key.");
   const encoded = key.slice(5).replace(/-/g, "+").replace(/_/g, "/");
   const binary = atob(encoded + "=".repeat((4 - encoded.length % 4) % 4));
   const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
   const payload = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
-  if (payload.version !== 1 ||
-      typeof payload.code !== "string" || !/^[A-Z2-9]{6}$/.test(payload.code) ||
+  if (payload.version !== 2 ||
       typeof payload.playerId !== "string" || payload.playerId.length < 8 || payload.playerId.length > 100 ||
       typeof payload.token !== "string" || payload.token.length < 20 || payload.token.length > 256) {
     throw new Error("That recovery key is incomplete or invalid.");
   }
-  return { code: payload.code, playerId: payload.playerId, token: payload.token };
+  return { playerId: payload.playerId, token: payload.token };
 }
-function readLabels(code: string): Labels {
-  try { return JSON.parse(localStorage.getItem("tank-turn-tactics-labels-" + code) || "{}") as Labels; }
+function readLabels(playerId: string): Labels {
+  try { return JSON.parse(localStorage.getItem("tank-turn-tactics-labels-" + playerId) || "{}") as Labels; }
   catch { return {}; }
 }
 function duration(ms: number): string {
@@ -63,11 +62,9 @@ export default function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
-  const [code, setCode] = useState("");
-  const [mode, setMode] = useState<"create" | "join" | "recover">("create");
+  const [mode, setMode] = useState<"join" | "recover">("join");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [labels, setLabels] = useState<Labels>({});
-  const [chatText, setChatText] = useState("");
   const [giftAmount, setGiftAmount] = useState(1);
   const [juryTarget, setJuryTarget] = useState("");
   const [recoveryInput, setRecoveryInput] = useState("");
@@ -85,14 +82,14 @@ export default function App() {
   useEffect(() => {
     if (!session) { setGame(null); setConnection("offline"); return; }
     if (!API_BASE) { setError("Server URL is not configured. See README.md."); setConnection("offline"); return; }
-    setLabels(readLabels(session.code));
+    setLabels(readLabels(session.playerId));
     let stopped = false, retry = 0, retryId = 0;
     const connect = () => {
       if (stopped) return;
       setConnection("connecting");
       const endpoint = new URL(API_BASE);
       endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
-      endpoint.pathname = "/api/rooms/" + session.code + "/ws";
+      endpoint.pathname = "/api/game/ws";
       endpoint.search = new URLSearchParams({ playerId: session.playerId, token: session.token }).toString();
       const socket = new WebSocket(endpoint.toString());
       socketRef.current = socket;
@@ -130,11 +127,9 @@ export default function App() {
     if (mode === "recover" || !name.trim() || name.trim().length > 18) return;
     setBusy(true); setError("");
     try {
-      const result = mode === "create"
-        ? await api("/api/rooms", { name: name.trim() })
-        : await api("/api/rooms/" + code.toUpperCase() + "/join", { name: name.trim() });
-      const next: Session = { code: result.code, playerId: result.playerId, token: result.token, name: name.trim() };
-      localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+      const result = await api("/api/game/join", { name: name.trim() });
+      const next: Session = { playerId: result.playerId, token: result.token, name: result.name || name.trim() };
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
       setSession(next);
       setRecoveryOpen(true);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not enter the lobby."); }
@@ -144,15 +139,15 @@ export default function App() {
     setBusy(true); setError("");
     try {
       const recovery = readRecoveryKey(recoveryInput);
-      const result = await api("/api/rooms/" + recovery.code + "/recover", { playerId: recovery.playerId, token: recovery.token });
-      const next: Session = { code: result.code, playerId: result.playerId, token: recovery.token, name: result.name };
-      localStorage.setItem(SESSION_KEY, JSON.stringify(next));
-      setSession(next); setMode("create"); setRecoveryInput(""); setRecoveryOpen(true);
+      const result = await api("/api/game/recover", { playerId: recovery.playerId, token: recovery.token });
+      const next: Session = { playerId: result.playerId, token: recovery.token, name: result.name };
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
+      setSession(next); setMode("join"); setRecoveryInput(""); setRecoveryOpen(true);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not restore this player."); }
     finally { setBusy(false); }
   };
   const leave = () => {
-    socketRef.current?.close(); localStorage.removeItem(SESSION_KEY);
+    socketRef.current?.close(); sessionStorage.removeItem(SESSION_KEY);
     setSession(null); setGame(null); setError(""); setRecoveryOpen(false); setDebugOpen(false);
   };
   const recoveryKey = session ? makeRecoveryKey(session) : "";
@@ -161,7 +156,7 @@ export default function App() {
     const blob = new Blob([recoveryKey + "\n"], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
-    anchor.href = url; anchor.download = "tank-turn-tactics-" + session.code + "-recovery-key.txt";
+    anchor.href = url; anchor.download = "tank-turn-tactics-player-recovery-key.txt";
     anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const checkApiHealth = async () => {
@@ -171,9 +166,9 @@ export default function App() {
   };
   const copyDiagnostics = async () => {
     const report = {
-      app: "Tank Turn Tactics v0.4", apiBase: API_BASE || "not configured",
+      app: "Tank Turn Tactics v0.5", apiBase: API_BASE || "not configured",
       connection, websocketState: socketRef.current?.readyState ?? null,
-      roomCode: session?.code ?? null, phase: game?.phase ?? null,
+      sharedMatch: true, phase: game?.phase ?? null,
       playerCount: game?.players.length ?? null, boardSize: game?.boardSize ?? null,
       apiHealth: debugHealth, lastError: error || null, timestamp: new Date().toISOString(),
       // Recovery tokens are intentionally excluded.
@@ -189,42 +184,39 @@ export default function App() {
   const updateLabel = (id: string, label: PlayerLabel) => {
     const next = { ...labels, [id]: label };
     setLabels(next);
-    if (session) localStorage.setItem("tank-turn-tactics-labels-" + session.code, JSON.stringify(next));
+    if (session) localStorage.setItem("tank-turn-tactics-labels-" + session.playerId, JSON.stringify(next));
   };
-  const sendChat = () => { if (chatText.trim()) { send({ type: "chat", text: chatText }); setChatText(""); } };
   const juryCandidates = game?.players.filter((p) => p.alive) || [];
   const effectiveJuryTarget = juryCandidates.some((p) => p.id === juryTarget) ? juryTarget : (juryCandidates[0]?.id || "");
 
   if (!session) return <div className="landing">
     <header className="brand"><div className="brand-icon"><Shield/></div><div><b>TANK TURN TACTICS</b><small>A long game of short decisions</small></div></header>
     <main className="landing-grid">
-      <section className="intro"><div className="eyebrow">PERSISTENT MULTIPLAYER STRATEGY</div><h1>Make every<br/><em>move count.</em></h1><p>Build alliances. Watch your range. Choose when to strike. Your tank earns one action point each day, so the best move is rarely the fastest one.</p><div className="features"><span><Move size={16}/> Tactical grid</span><span><Users size={16}/> Lobby codes</span><span><BatteryCharging size={16}/> Daily AP</span></div></section>
+      <section className="intro"><div className="eyebrow">ONE SHARED MULTIPLAYER MATCH</div><h1>Make every<br/><em>move count.</em></h1><p>Open this page in a few separate tabs and join with a different callsign in each. Every tab gets its own tank, so you can test the game solo.</p><div className="features"><span><Move size={16}/> Tactical grid</span><span><Users size={16}/> Multi-tab playtest</span><span><BatteryCharging size={16}/> Daily AP</span></div></section>
       <section className="panel join-card">
         <div className="tabs">
-          <button className={mode === "create" ? "active" : ""} onClick={() => setMode("create")}>Create</button>
-          <button className={mode === "join" ? "active" : ""} onClick={() => setMode("join")}>Join</button>
+          <button className={mode === "join" ? "active" : ""} onClick={() => setMode("join")}>Join game</button>
           <button className={mode === "recover" ? "active" : ""} onClick={() => setMode("recover")}>Restore</button>
         </div>
-        <div className="eyebrow">{mode === "create" ? "HOST A MATCH" : mode === "join" ? "ENTER A ROOM CODE" : "RESTORE A PLAYER"}</div>
-        <h2>{mode === "create" ? "Start a new lobby." : mode === "join" ? "Join your crew." : "Recover your save."}</h2>
-        <p>{mode === "create" ? "Create a private room and invite others with a six-character code." : mode === "join" ? "Enter the code shared by the lobby host." : "Paste the recovery key you saved earlier to reconnect to your player."}</p>
+        <div className="eyebrow">{mode === "join" ? "SHARED MATCH" : "RESTORE A PLAYER"}</div>
+        <h2>{mode === "join" ? "Join the game." : "Recover your save."}</h2>
+        <p>{mode === "join" ? "The first player becomes host. Open a new tab for every additional player. The host starts once everyone has joined." : "Paste the recovery key you saved earlier to reconnect to this player."}</p>
         {mode === "recover" ? (
-          <label>RECOVERY KEY<textarea className="recovery-input" value={recoveryInput} rows={4} placeholder="TTT1.…" onChange={(e) => setRecoveryInput(e.target.value)}/></label>
-        ) : <>
+          <label>RECOVERY KEY<textarea className="recovery-input" value={recoveryInput} rows={4} placeholder="TTT2.…" onChange={(e) => setRecoveryInput(e.target.value)}/></label>
+        ) : (
           <label>PLAYER NAME<input value={name} maxLength={18} placeholder="Choose a callsign" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && enter()}/></label>
-          {mode === "join" && <label>LOBBY CODE<input className="room-code-input" value={code} maxLength={6} placeholder="ABC123" onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z2-9]/g, ""))}/></label>}
-        </>}
+        )}
         {error && <div className="error">{error}</div>}
-        <button className="primary-button" disabled={busy || (mode === "recover" ? !recoveryInput.trim() : !name.trim() || (mode === "join" && code.length !== 6))} onClick={mode === "recover" ? restoreSession : enter}>
-          {busy ? "Connecting…" : mode === "create" ? "Create lobby" : mode === "join" ? "Join lobby" : "Restore player"}<ChevronRight size={18}/>
+        <button className="primary-button" disabled={busy || (mode === "recover" ? !recoveryInput.trim() : !name.trim())} onClick={mode === "recover" ? restoreSession : enter}>
+          {busy ? "Connecting…" : mode === "join" ? "Join shared game" : "Restore player"}<ChevronRight size={18}/>
         </button>
-        <div className="card-foot"><KeyRound size={14}/> Keep recovery keys private. Anyone holding one can control that player.</div>
+        <div className="card-foot"><KeyRound size={14}/> Recovery keys are private. Anyone holding one can control that player.</div>
       </section>
     </main><footer className="landing-foot">16 × 16 TO 32 × 32 MAPS <span>•</span> UP TO {MAX_PLAYERS} PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
   </div>;
 
   return <div className="shell">
-    <header className="topbar"><div className="brand"><div className="brand-icon"><Shield/></div><div><b>TANK TURN TACTICS</b><small>A long game of short decisions</small></div></div><div className="top-right"><span className={"connection " + connection}><i/>{connection === "online" ? "Connected" : connection === "connecting" ? "Connecting" : "Reconnecting"}</span><button className="quiet-button" onClick={() => { setRecoveryOpen(!recoveryOpen); setDebugOpen(false); }}><KeyRound size={14}/> Save key</button><button className="quiet-button" onClick={() => { setDebugOpen(!debugOpen); setRecoveryOpen(false); }}><Bug size={14}/> Debug</button><button className="quiet-button" onClick={leave}>Leave view</button></div></header>
+    <header className="topbar"><div className="brand"><div className="brand-icon"><Shield/></div><div><b>TANK TURN TACTICS</b><small>One shared game · each tab is a player</small></div></div><div className="top-right"><span className={"connection " + connection}><i/>{connection === "online" ? "Connected" : connection === "connecting" ? "Connecting" : "Reconnecting"}</span><button className="quiet-button" onClick={() => window.open(window.location.href, "_blank", "noopener,noreferrer")}><Users size={14}/> New player tab</button><button className="quiet-button" onClick={() => { setRecoveryOpen(!recoveryOpen); setDebugOpen(false); }}><KeyRound size={14}/> Save key</button><button className="quiet-button" onClick={() => { setDebugOpen(!debugOpen); setRecoveryOpen(false); }}><Bug size={14}/> Debug</button><button className="quiet-button" onClick={leave}>Switch player</button></div></header>
     {recoveryOpen && <section className="panel utility-panel recovery-panel">
       <div className="section-title"><div><div className="eyebrow">PLAYER BACKUP</div><h2>Recovery key</h2></div><button className="quiet-button" onClick={() => setRecoveryOpen(false)}>Close</button></div>
       <p>Save this private key somewhere safe. It restores this exact player and server-saved game state on another browser. Anyone holding it can take over the player.</p>
@@ -249,14 +241,13 @@ export default function App() {
         <button className="secondary-button" onClick={() => { socketRef.current?.close(); setConnection("connecting"); }}>Reconnect</button>
         <button className="secondary-button" onClick={copyDiagnostics}>Copy diagnostics</button>
       </div>
-      <details><summary>Show public room state</summary><pre>{game ? JSON.stringify({ code: game.code, phase: game.phase, boardSize: game.boardSize, players: game.players, obstacles: game.obstacles, chatCount: game.chat.length }, null, 2) : "No room state received yet."}</pre></details>
+      <details><summary>Show public match state</summary><pre>{game ? JSON.stringify({ phase: game.phase, boardSize: game.boardSize, players: game.players, obstacles: game.obstacles }, null, 2) : "No match state received yet."}</pre></details>
       <small className="debug-note">Diagnostics do not include your recovery token or API credentials.</small>
     </section>}
     {error && <div className="toast">{error}<button onClick={() => setError("")}>×</button></div>}
-    {!game ? <div className="loading panel"><RefreshCw className="spin"/><h2>Reconnecting to {session.code}</h2><p>Restoring your player session.</p><button className="quiet-button" onClick={leave}>Use another lobby</button></div> :
+    {!game ? <div className="loading panel"><RefreshCw className="spin"/><h2>Connecting to the shared game</h2><p>Restoring {session.name}'s player session.</p><button className="quiet-button" onClick={leave}>Switch player</button></div> :
     game.phase === "lobby" ? <main className="lobby-layout">
-      <section className="panel lobby-hero"><div className="eyebrow">MATCH LOBBY · WAITING FOR PLAYERS</div><h1>Assemble your crew.</h1><p>Share the room code. Once the host starts, the battlefield is locked. Every tank starts with 3 HP, range 2, and 0 AP.</p>
-        <div className="code-box"><div><small>YOUR LOBBY CODE</small><strong>{game.code}</strong></div><button className="secondary-button" onClick={() => navigator.clipboard.writeText(game.code).then(() => setError("Lobby code copied."), () => setError("Lobby code: " + game.code))}><Copy size={16}/> Copy code</button></div>
+      <section className="panel lobby-hero"><div className="eyebrow">ONE SHARED MATCH · WAITING FOR PLAYERS</div><h1>Assemble your crew.</h1><p>Open the game in another tab and join with a different callsign to add another tank. Once everyone has joined, the host starts the match.</p>
         <div className="lobby-meta"><span><Users size={16}/> {game.players.length} / {MAX_PLAYERS} players</span><span>Waiting for host</span></div>
       </section>
       <section className="panel lobby-settings">
@@ -274,10 +265,9 @@ export default function App() {
         {me?.host ? <button className="primary-button" disabled={game.players.length < 2} onClick={() => send({ type: "start" })}>Start match <ChevronRight/></button> : <p className="waiting">Waiting for the host to start the match…</p>}
         {game.players.length < 2 && <small className="muted">Invite at least one other player to unlock Start match.</small>}
       </section>
-      <Chat chat={game.chat} text={chatText} setText={setChatText} send={sendChat}/>
     </main> :
     <main className="game-main">
-      <div className="game-heading"><div><div className="eyebrow">{game.phase === "ended" ? "MATCH COMPLETE" : "LIVE MATCH"} · ROOM {game.code}</div><h1>{game.phase === "ended" ? "The dust has settled." : "Command your tank."}</h1><p>{game.phase === "ended" ? (game.players.find((p) => p.id === game.winnerId)?.name || "A player") + " is the last tank standing." : "Every move matters. Choose each action carefully."}</p></div><div className="game-pills"><span><Users size={15}/> {game.players.length} players</span><span>{game.boardSize} × {game.boardSize} grid</span></div></div>
+      <div className="game-heading"><div><div className="eyebrow">{game.phase === "ended" ? "MATCH COMPLETE" : "LIVE MATCH"} · SHARED GAME</div><h1>{game.phase === "ended" ? "The dust has settled." : "Command your tank."}</h1><p>{game.phase === "ended" ? (game.players.find((p) => p.id === game.winnerId)?.name || "A player") + " is the last tank standing." : "Every move matters. Choose each action carefully."}</p>{game.phase === "ended" && me?.host && <button className="primary-button reset-match-button" onClick={() => send({ type: "reset" })}>Reset match for another test <RefreshCw size={16}/></button>}</div><div className="game-pills"><span><Users size={15}/> {game.players.length} players</span><span>{game.boardSize} × {game.boardSize} grid</span></div></div>
       <div className="game-grid">
         <section className="panel map-panel"><div className="section-title"><div><div className="eyebrow">TACTICAL MAP</div><h2>Battlefield</h2></div><div className="legend"><span><i className="legend-you"/> You</span><span><i className="legend-player"/> Player</span><span><i className="legend-rock"/> Obstacle</span></div></div>
           <div className="board-wrap"><div className={"board " + (game.boardSize > 20 ? "board-large" : "")} style={{ gridTemplateColumns: "repeat(" + game.boardSize + ", minmax(0, 1fr))" }}>{Array.from({ length: game.boardSize * game.boardSize }, (_, i) => {
@@ -318,18 +308,10 @@ export default function App() {
             {game.players.map(p => <div className={"field-row " + (p.id === selectedId ? "focused" : "")} key={p.id}><button className="field-person" onClick={() => setSelectedId(p.id)}><i className={p.id === session.playerId ? "you-dot" : p.alive ? "player-dot" : "dead-dot"}/><span><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.alive ? p.hp + " HP · range " + p.range : "Eliminated"}</small></span></button><select aria-label={"Label " + p.name} value={labels[p.id] || "unmarked"} onChange={e => updateLabel(p.id, e.target.value as PlayerLabel)}><option value="unmarked">Unmarked</option><option value="ally">Ally</option><option value="enemy">Enemy</option></select></div>)}
             <p className="micro-note">Labels are private notes saved in this browser. They do not create teams or change damage.</p>
           </section>
-          <Chat chat={game.chat} text={chatText} setText={setChatText} send={sendChat}/>
         </aside>
       </div>
       <p className="server-note"><Shield size={14}/> Server-authoritative match · AP and actions are validated by the game server.</p>
     </main>}
-    <footer className="footer">TANK TURN TACTICS <span>·</span> v0.4</footer>
+    <footer className="footer">TANK TURN TACTICS <span>·</span> v0.5 · ONE SHARED MATCH</footer>
   </div>;
-}
-
-function Chat({ chat, text, setText, send }: { chat: ChatMessage[]; text: string; setText: (value: string) => void; send: () => void }) {
-  return <section className="panel chat-panel"><div className="section-title"><div><div className="eyebrow">COMMS</div><h2><MessageCircle size={17}/> Field chat</h2></div><small>{chat.length}/50</small></div>
-    <div className="chat-messages">{chat.length ? chat.map((m: ChatMessage) => <div className={"chat-message " + (m.playerId === "system" ? "system-message" : "")} key={m.id}><div><b>{m.playerName}</b><time>{new Date(m.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div><p>{m.text}</p></div>) : <div className="chat-empty">No messages yet. Coordinate with your crew.</div>}</div>
-    <form className="chat-form" onSubmit={e => { e.preventDefault(); send(); }}><input value={text} maxLength={300} onChange={e => setText(e.target.value)} placeholder="Send a message…"/><button aria-label="Send message" disabled={!text.trim()}><ArrowUpRight size={17}/></button></form>
-  </section>;
 }

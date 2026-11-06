@@ -1,5 +1,5 @@
 import {
-  BOARD_SIZE, MAP_SIZES, DAILY_AP_INTERVAL_MS, MAX_CHAT_MESSAGES, MAX_HP, MAX_PLAYERS,
+  BOARD_SIZE, MAP_SIZES, DAILY_AP_INTERVAL_MS, MAX_HP, MAX_PLAYERS,
   RANGE_UPGRADE_COST, STARTING_AP, STARTING_HP, STARTING_RANGE, chebyshevDistance,
 } from "../../../packages/shared/src/contracts";
 import type { ClientAction, GameState, Player, PublicGameState } from "../../../packages/shared/src/contracts";
@@ -15,13 +15,7 @@ const cors = (response: Response) => {
   headers.set("access-control-allow-headers", "content-type");
   return new Response(response.body, { status: response.status, headers });
 };
-const stubFor = (env: Env, code: string) => env.ROOMS.get(env.ROOMS.idFromName(code));
-const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-function makeCode(): string {
-  const bytes = new Uint8Array(6);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
-}
+const stubFor = (env: Env) => env.ROOMS.get(env.ROOMS.idFromName("shared-game-v1"));
 function makeToken(): string { return crypto.randomUUID() + crypto.randomUUID().replaceAll("-", ""); }
 function cleanName(value: unknown): string {
   if (typeof value !== "string") throw new Error("Enter a player name.");
@@ -36,37 +30,26 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname === "/api/health") return cors(json({ ok: true, service: "tank-turn-tactics-api" }));
-      if (url.pathname === "/api/rooms" && request.method === "POST") {
+      const stub = stubFor(env);
+      if (url.pathname === "/api/game/join" && request.method === "POST") {
         const body = await request.json() as { name?: unknown };
-        const name = cleanName(body.name);
-        for (let attempt = 0; attempt < 5; attempt++) {
-          const code = makeCode(), token = makeToken(), playerId = crypto.randomUUID();
-          const response = await stubFor(env, code).fetch("https://room.internal/create", {
-            method: "POST", body: JSON.stringify({ code, name, token, playerId }),
-          });
-          if (response.status !== 409) return cors(response);
-        }
-        return cors(json({ error: "Could not reserve a lobby code. Please retry." }, 503));
-      }
-      const match = url.pathname.match(/^\/api\/rooms\/([A-Z2-9]{6})(?:\/(join|recover|ws))?$/i);
-      if (!match) return cors(json({ error: "Not found." }, 404));
-      const code = match[1].toUpperCase();
-      const action = match[2] || "state";
-      const stub = stubFor(env, code);
-      if (action === "join" && request.method === "POST") {
-        const body = await request.json() as { name?: unknown };
-        return cors(await stub.fetch("https://room.internal/join", {
+        return cors(await stub.fetch("https://game.internal/join", {
           method: "POST", body: JSON.stringify({ name: cleanName(body.name) }),
         }));
       }
-      if (action === "recover" && request.method === "POST") {
+      if (url.pathname === "/api/game/recover" && request.method === "POST") {
         const body = await request.json() as { playerId?: unknown; token?: unknown };
-        return cors(await stub.fetch("https://room.internal/recover", {
+        return cors(await stub.fetch("https://game.internal/recover", {
           method: "POST", body: JSON.stringify(body),
         }));
       }
-      if (action === "ws") return stub.fetch(new Request("https://room.internal/ws" + url.search, request));
-      return cors(await stub.fetch("https://room.internal/state"));
+      if (url.pathname === "/api/game/ws") {
+        return stub.fetch(new Request("https://game.internal/ws" + url.search, request));
+      }
+      if (url.pathname === "/api/game/state" && request.method === "GET") {
+        return cors(await stub.fetch("https://game.internal/state"));
+      }
+      return cors(json({ error: "Not found." }, 404));
     } catch (error) {
       return cors(json({ error: error instanceof Error ? error.message : "Unexpected server error." }, 400));
     }
@@ -92,15 +75,14 @@ export class GameRoom {
   private async route(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     if (path === "/ws") return this.connect(request);
-    if (path === "/create" && request.method === "POST") return this.create(request);
     if (path === "/join" && request.method === "POST") return this.join(request);
     if (path === "/recover" && request.method === "POST") return this.recover(request);
     if (path === "/state") {
       const game = await this.getGame();
-      if (!game) return json({ error: "Lobby not found." }, 404);
+      if (!game) return json({ ok: true, exists: false, phase: "lobby", players: 0 });
       this.applyDailyAp(game, Date.now());
       await this.save(game);
-      return json({ ok: true, code: game.code, phase: game.phase, players: game.players.length });
+      return json({ ok: true, exists: true, phase: game.phase, players: game.players.length, boardSize: game.boardSize });
     }
     return json({ error: "Not found." }, 404);
   }
@@ -168,31 +150,30 @@ export class GameRoom {
     try { socket.send(JSON.stringify({ type: "error", message })); } catch { /* closed socket */ }
   }
 
-  private async create(request: Request): Promise<Response> {
-    const body = await request.json() as { code: string; name: string; token: string; playerId: string };
-    if (await this.getGame()) return json({ error: "Code collision." }, 409);
-    const now = Date.now();
-    const player: Player = {
-      id: body.playerId, token: body.token, name: cleanName(body.name), hp: STARTING_HP,
-      ap: STARTING_AP, range: STARTING_RANGE, x: null, y: null, alive: true,
-      host: true, joinedAt: now, nextApAt: null, online: false,
-    };
-    const game: GameState = {
-      code: body.code, phase: "lobby", hostId: player.id, createdAt: now,
-      startedAt: null, updatedAt: now, boardSize: BOARD_SIZE, obstacles: [],
-      players: [player], chat: [], winnerId: null, juryCycleEndsAt: null, juryVotes: {},
-    };
-    await this.save(game);
-    return json({ code: game.code, playerId: player.id, token: player.token });
-  }
-
   private async join(request: Request): Promise<Response> {
-    const game = await this.getGame();
-    if (!game) return json({ error: "Lobby not found. Check the code." }, 404);
-    if (game.phase !== "lobby") return json({ error: "This match has already started." }, 409);
-    if (game.players.length >= MAX_PLAYERS) return json({ error: "This lobby is full." }, 409);
     const body = await request.json() as { name: string };
     const now = Date.now();
+    let game = await this.getGame();
+
+    // The first tab to join creates the shared lobby and becomes its host.
+    if (!game) {
+      const player: Player = {
+        id: crypto.randomUUID(), token: makeToken(), name: cleanName(body.name),
+        hp: STARTING_HP, ap: STARTING_AP, range: STARTING_RANGE, x: null, y: null,
+        alive: true, host: true, joinedAt: now, nextApAt: null, online: false,
+      };
+      game = {
+        phase: "lobby", hostId: player.id, createdAt: now, startedAt: null,
+        updatedAt: now, boardSize: BOARD_SIZE, obstacles: [], players: [player],
+        winnerId: null, juryCycleEndsAt: null, juryVotes: {},
+      };
+      await this.save(game);
+      return json({ playerId: player.id, token: player.token, name: player.name });
+    }
+    if (game.phase !== "lobby") {
+      return json({ error: "The shared match has already started. The host must reset it after the match ends before new players can join." }, 409);
+    }
+    if (game.players.length >= MAX_PLAYERS) return json({ error: "The shared match is full." }, 409);
     const player: Player = {
       id: crypto.randomUUID(), token: makeToken(), name: cleanName(body.name),
       hp: STARTING_HP, ap: STARTING_AP, range: STARTING_RANGE, x: null, y: null,
@@ -201,7 +182,7 @@ export class GameRoom {
     game.players.push(player);
     game.updatedAt = now;
     await this.save(game);
-    return json({ code: game.code, playerId: player.id, token: player.token });
+    return json({ playerId: player.id, token: player.token, name: player.name });
   }
 
   private async recover(request: Request): Promise<Response> {
@@ -212,7 +193,7 @@ export class GameRoom {
     const game = await this.getGame();
     const player = game?.players.find((p) => p.id === body.playerId && p.token === body.token);
     if (!game || !player) return json({ error: "That recovery key does not match a saved player." }, 403);
-    return json({ code: game.code, playerId: player.id, name: player.name });
+    return json({ playerId: player.id, name: player.name });
   }
 
   private async connect(request: Request): Promise<Response> {
@@ -270,11 +251,10 @@ export class GameRoom {
   }
 
   private applyAction(game: GameState, actor: Player, action: ClientAction, now: number): void {
-    if (action.type === "chat") {
-      const text = typeof action.text === "string" ? action.text.trim().slice(0, 300) : "";
-      if (!text) throw new Error("Chat message cannot be empty.");
-      game.chat.push({ id: crypto.randomUUID(), playerId: actor.id, playerName: actor.name, text, at: now });
-      game.chat = game.chat.slice(-MAX_CHAT_MESSAGES);
+    if (action.type === "reset") {
+      if (!actor.host) throw new Error("Only the host can reset the shared match.");
+      if (game.phase !== "ended") throw new Error("The match can only be reset after it ends.");
+      this.resetGame(game, now);
       return;
     }
     if (action.type === "setMapSize") {
@@ -380,10 +360,25 @@ export class GameRoom {
       player.x = x; player.y = y; player.hp = STARTING_HP; player.ap = STARTING_AP;
       player.range = STARTING_RANGE; player.alive = true; player.nextApAt = now + DAILY_AP_INTERVAL_MS;
     }
-    game.chat.push({
-      id: crypto.randomUUID(), playerId: "system", playerName: "COMMAND",
-      text: "Match started. Each living tank earns 1 AP every 24 hours.", at: now,
-    });
+  }
+
+  private resetGame(game: GameState, now: number): void {
+    game.phase = "lobby";
+    game.startedAt = null;
+    game.updatedAt = now;
+    game.winnerId = null;
+    game.obstacles = [];
+    game.juryCycleEndsAt = null;
+    game.juryVotes = {};
+    for (const player of game.players) {
+      player.hp = STARTING_HP;
+      player.ap = STARTING_AP;
+      player.range = STARTING_RANGE;
+      player.x = null;
+      player.y = null;
+      player.alive = true;
+      player.nextApAt = null;
+    }
   }
 
   private spend(player: Player, amount: number): void {
@@ -436,9 +431,9 @@ export class GameRoom {
 
   private publicState(game: GameState, player: Player): PublicGameState {
     return {
-      code: game.code, phase: game.phase, createdAt: game.createdAt,
+      phase: game.phase, createdAt: game.createdAt,
       startedAt: game.startedAt, boardSize: game.boardSize,
-      obstacles: game.obstacles, chat: game.chat, winnerId: game.winnerId,
+      obstacles: game.obstacles, winnerId: game.winnerId,
       players: game.players.map(({ id, name, hp, range, x, y, alive, host, online }) => ({
         id, name, hp, range, x, y, alive, host, online,
       })),
