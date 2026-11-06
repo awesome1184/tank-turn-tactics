@@ -12,8 +12,8 @@ export type MatchPhase = "lobby" | "active" | "ended";
 export type PlayerLabel = "ally" | "enemy" | "unmarked";
 export interface Player { id:string; token:string; name:string; hp:number; ap:number; range:number; x:number|null; y:number|null; alive:boolean; host:boolean; joinedAt:number; nextApAt:number|null; online:boolean; }
 export interface ChatMessage { id:string; playerId:string; playerName:string; text:string; at:number; }
-export interface GameState { code:string; phase:MatchPhase; hostId:string; createdAt:number; startedAt:number|null; updatedAt:number; boardSize:number; obstacles:Array<[number,number]>; players:Player[]; chat:ChatMessage[]; winnerId:string|null; }
+export interface GameState { code:string; phase:MatchPhase; hostId:string; createdAt:number; startedAt:number|null; updatedAt:number; boardSize:number; obstacles:Array<[number,number]>; players:Player[]; chat:ChatMessage[]; winnerId:string|null; juryCycleEndsAt:number|null; juryVotes:Record<string,string>; }
 export interface PublicPlayer { id:string; name:string; hp:number; range:number; x:number|null; y:number|null; alive:boolean; host:boolean; online:boolean; }
-export interface PublicGameState { code:string; phase:MatchPhase; createdAt:number; startedAt:number|null; boardSize:number; obstacles:Array<[number,number]>; players:PublicPlayer[]; chat:ChatMessage[]; winnerId:string|null; me:{id:string;ap:number;nextApAt:number|null}; }
-export interface ClientAction { type:"sync"|"start"|"move"|"attack"|"heal"|"upgradeRange"|"giftAp"|"giftHp"|"chat"; x?:number; y?:number; targetId?:string; amount?:number; text?:string; }
+export interface PublicGameState { code:string; phase:MatchPhase; createdAt:number; startedAt:number|null; boardSize:number; obstacles:Array<[number,number]>; players:PublicPlayer[]; chat:ChatMessage[]; winnerId:string|null; jury:{memberCount:number;cycleEndsAt:number|null}; me:{id:string;ap:number;nextApAt:number|null;isJuryMember:boolean;hasVoted:boolean}; }
+export interface ClientAction { type:"sync"|"start"|"move"|"attack"|"heal"|"upgradeRange"|"giftAp"|"giftHp"|"juryVote"|"chat"; x?:number; y?:number; targetId?:string; amount?:number; text?:string; }
 export function chebyshevDistance(ax:number,ay:number,bx:number,by:number):number { return Math.max(Math.abs(ax-bx),Math.abs(ay-by)); }

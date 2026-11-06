@@ -44,7 +44,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [labels, setLabels] = useState<Labels>({});
   const [chatText, setChatText] = useState("");
-  const [giftAmount, setGiftAmount] = useState(1);
+  const [giftAmount, setGiftAmount] = useState(1);\n  const [juryTarget, setJuryTarget] = useState("");
   const [now, setNow] = useState(Date.now());
   const socketRef = useRef<WebSocket | null>(null);
 
@@ -121,7 +121,7 @@ export default function App() {
     setLabels(next);
     if (session) localStorage.setItem("tank-turn-tactics-labels-" + session.code, JSON.stringify(next));
   };
-  const sendChat = () => { if (chatText.trim()) { send({ type: "chat", text: chatText }); setChatText(""); } };
+  const sendChat = () => { if (chatText.trim()) { send({ type: "chat", text: chatText }); setChatText(""); } };\n  const juryCandidates = game?.players.filter((p) => p.alive) || [];\n  const effectiveJuryTarget = juryCandidates.some((p) => p.id === juryTarget) ? juryTarget : (juryCandidates[0]?.id || "");
 
   if (!session) return <div className="landing">
     <header className="brand"><div className="brand-icon"><Shield/></div><div><b>TANK TURN TACTICS</b><small>A long game of short decisions</small></div></header>
@@ -184,6 +184,15 @@ export default function App() {
               </div>
             </> : <div className="eliminated-note"><Skull/> {game.phase === "ended" ? "This match has ended." : "You are eliminated. Another player can revive you with a heart gift."}</div>}
           </section>
+          {game.phase === "active" && game.jury.memberCount > 0 && <section className="panel jury-panel">
+            <div className="section-title"><div><div className="eyebrow">THE JURY</div><h2>Secret ballot</h2></div><span className="jury-count">{game.jury.memberCount} juror{game.jury.memberCount === 1 ? "" : "s"}</span></div>
+            <p className="jury-description">Eliminated players can secretly support one living tank each day. Three or more votes for the same player award that player +1 bonus AP when the daily cycle closes.</p>
+            <div className="jury-deadline"><span>Ballot closes in</span><strong>{game.jury.cycleEndsAt ? duration(game.jury.cycleEndsAt - now) : "—"}</strong></div>
+            {game.me.isJuryMember ? (game.me.hasVoted
+              ? <div className="jury-confirmation"><Shield size={16}/> Your vote is recorded and remains secret until the cycle resolves.</div>
+              : <div className="jury-vote-form"><label>CHOOSE A LIVING PLAYER<select value={effectiveJuryTarget} onChange={(e) => setJuryTarget(e.target.value)}>{juryCandidates.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><button className="jury-vote-button" disabled={!effectiveJuryTarget || connection !== "online"} onClick={() => send({ type: "juryVote", targetId: effectiveJuryTarget })}>Cast secret vote <ChevronRight size={16}/></button></div>
+            ) : <div className="jury-confirmation"><Skull size={16}/> Only eliminated players can cast a jury vote. Votes and AP balances are private.</div>}
+          </section>}
           <section className="panel roster-panel"><div className="section-title"><div><div className="eyebrow">FIELD INTELLIGENCE</div><h2>Players</h2></div><small>{game.players.filter(p => p.alive).length} alive</small></div>
             {game.players.map(p => <div className={"field-row " + (p.id === selectedId ? "focused" : "")} key={p.id}><button className="field-person" onClick={() => setSelectedId(p.id)}><i className={p.id === session.playerId ? "you-dot" : p.alive ? "player-dot" : "dead-dot"}/><span><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.alive ? p.hp + " HP · range " + p.range : "Eliminated"}</small></span></button><select aria-label={"Label " + p.name} value={labels[p.id] || "unmarked"} onChange={e => updateLabel(p.id, e.target.value as PlayerLabel)}><option value="unmarked">Unmarked</option><option value="ally">Ally</option><option value="enemy">Enemy</option></select></div>)}
             <p className="micro-note">Labels are private notes saved in this browser. They do not create teams or change damage.</p>

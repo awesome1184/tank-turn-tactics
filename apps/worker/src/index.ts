@@ -165,7 +165,7 @@ export class GameRoom {
     const game: GameState = {
       code: body.code, phase: "lobby", hostId: player.id, createdAt: now,
       startedAt: null, updatedAt: now, boardSize: BOARD_SIZE, obstacles: [],
-      players: [player], chat: [], winnerId: null,
+      players: [player], chat: [], winnerId: null, juryCycleEndsAt: null, juryVotes: {},
     };
     await this.save(game);
     return json({ code: game.code, playerId: player.id, token: player.token });
@@ -210,6 +210,31 @@ export class GameRoom {
 
   private applyDailyAp(game: GameState, now: number): void {
     if (game.phase !== "active") return;
+
+    // The jury ballot closes on the same 24-hour boundary as daily AP income.
+    if (game.juryCycleEndsAt === null && game.startedAt !== null) {
+      game.juryCycleEndsAt = game.startedAt + DAILY_AP_INTERVAL_MS;
+    }
+    if (game.juryCycleEndsAt !== null && now >= game.juryCycleEndsAt) {
+      const votesByTarget = new Map<string, number>();
+      for (const [voterId, targetId] of Object.entries(game.juryVotes)) {
+        const voter = game.players.find((p) => p.id === voterId);
+        const target = game.players.find((p) => p.id === targetId);
+        if (!voter || voter.alive || !target || !target.alive) continue;
+        votesByTarget.set(targetId, (votesByTarget.get(targetId) || 0) + 1);
+      }
+      for (const [targetId, voteCount] of votesByTarget) {
+        if (voteCount >= 3) {
+          const recipient = game.players.find((p) => p.id === targetId);
+          if (recipient?.alive) recipient.ap += 1;
+        }
+      }
+      // Resolve stored votes once even if the room was offline for several days.
+      const elapsedCycles = Math.floor((now - game.juryCycleEndsAt) / DAILY_AP_INTERVAL_MS) + 1;
+      game.juryCycleEndsAt += elapsedCycles * DAILY_AP_INTERVAL_MS;
+      game.juryVotes = {};
+    }
+
     for (const player of game.players) {
       if (!player.alive || player.nextApAt === null || now < player.nextApAt) continue;
       const earned = Math.floor((now - player.nextApAt) / DAILY_AP_INTERVAL_MS) + 1;
@@ -289,12 +314,21 @@ export class GameRoom {
         } else target.hp = Math.min(MAX_HP, target.hp + 1);
         return;
       }
+      case "juryVote": {
+        if (actor.alive) throw new Error("Only eliminated players can vote in the jury.");
+        if (game.juryCycleEndsAt === null || now >= game.juryCycleEndsAt) throw new Error("The jury vote is closed. The next daily cycle is opening.");
+        if (game.juryVotes[actor.id]) throw new Error("You have already cast your jury vote this cycle.");
+        const target = this.target(game, actor, action.targetId);
+        if (!target.alive) throw new Error("The jury can only support a living player.");
+        game.juryVotes[actor.id] = target.id;
+        return;
+      }
       default: throw new Error("Unknown action.");
     }
   }
 
   private startGame(game: GameState, now: number): void {
-    game.phase = "active"; game.startedAt = now; game.winnerId = null;
+    game.phase = "active"; game.startedAt = now; game.winnerId = null; game.juryCycleEndsAt = now + DAILY_AP_INTERVAL_MS; game.juryVotes = {};
     const occupied = new Set<string>();
     while (game.obstacles.length < 30) {
       const x = Math.floor(Math.random() * BOARD_SIZE), y = Math.floor(Math.random() * BOARD_SIZE);
@@ -372,7 +406,7 @@ export class GameRoom {
       players: game.players.map(({ id, name, hp, range, x, y, alive, host, online }) => ({
         id, name, hp, range, x, y, alive, host, online,
       })),
-      me: { id: player.id, ap: player.ap, nextApAt: player.nextApAt },
+      jury: { memberCount: game.players.filter((p) => !p.alive).length, cycleEndsAt: game.juryCycleEndsAt },\n      me: { id: player.id, ap: player.ap, nextApAt: player.nextApAt, isJuryMember: !player.alive, hasVoted: !!game.juryVotes[player.id] },
     };
   }
 

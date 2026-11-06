@@ -1,4 +1,4 @@
-# Tank Turn Tactics — implemented rules (v0.1)
+# Tank Turn Tactics — implemented rules (v0.2)
 
 This is the exact ruleset implemented by the current prototype. It resolves details left unspecified so the server can validate every action consistently.
 
@@ -45,8 +45,21 @@ This is the exact ruleset implemented by the current prototype. It resolves deta
 - A disconnected player stays in the match. Their browser can reconnect using its saved session key.
 - The server is authoritative: it validates AP, pathing, range, HP, gifts, and match phase.
 
-## 7. Not in v0.1
-Jury voting / haunted status, daily map heart pickups, status text, tournament placement rules, and payment/prize handling are not implemented yet. Eliminated players are identified as the jury and can be revived by a heart gift, but jury votes are not active yet.
+## 7. Jury (implemented in v0.2)
+- Every eliminated player becomes a juror while the match remains active.
+- Each juror may cast one secret ballot per 24-hour match cycle, choosing one living player to support.
+- The ballot window opens at match start and closes at the same 24-hour boundary as daily AP income.
+- If a living player receives **3 or more valid votes** in a cycle, that player receives **1 bonus AP** when the cycle closes. The bonus is added on top of normal daily AP income; more than 3 votes still awards only 1 bonus AP.
+- Votes and vote totals are never sent to clients. A juror sees only whether their own ballot has been recorded.
+- A vote counts only if the voter is still eliminated and the recipient is still alive when the cycle is tallied.
+- If a juror is revived before the tally, their ballot is not counted. Their ballot remains marked as used for that cycle, so they cannot be revived and then cast a second ballot if eliminated again before the next cycle.
+- The jury stops voting when the match ends.
+
+### Which historical jury variant is used?
+The creator's spoken explanation in the original game retrospective describes a daily secret vote to help a living player, with 3 votes granting that player an extra AP. This is the implemented rule. A separately transcribed printed rule sheet describes a different “haunted” penalty for the most-voted player. The prototype does **not** combine those conflicting variants and does not apply a haunting penalty.
+
+## 8. Not in v0.2
+Daily map heart pickups, status text, tournament placement / negotiated placement rules, and payment/prize handling are not implemented yet.
 
 ## Why the AP timer is 24 hours
 The prototype intentionally uses the user's requested **one AP per day** rule. The timer is matchStartedAt + 24 hours, then every 24 hours thereafter. It does not use the 17-hour schedule from a related community recreation or the variable workday schedule in one historical transcription.

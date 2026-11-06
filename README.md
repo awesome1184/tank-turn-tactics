@@ -2,7 +2,7 @@
 
 A persistent browser-based multiplayer tank tactics game. The React client is hosted on GitHub Pages; an authoritative Cloudflare Worker + Durable Object server handles rooms, WebSockets, combat, and daily AP income.
 
-## Included in v0.1
+## Included in v0.2
 
 - Six-character lobby codes, player names, host-controlled match start, and up to 16 players.
 - Reconnectable sessions and persistent match state.
