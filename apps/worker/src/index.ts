@@ -48,6 +48,10 @@ export default {
       if (url.pathname === "/api/game/ws") {
         return stub.fetch(new Request("https://game.internal/ws" + url.search, request));
       }
+      if (url.pathname === "/api/game/end" && request.method === "POST") {
+        // Public playtest control: anyone on the login screen can end the active shared match.
+        return cors(await stub.fetch("https://game.internal/end", { method: "POST" }));
+      }
       if (url.pathname === "/api/game/state" && request.method === "GET") {
         return cors(await stub.fetch("https://game.internal/state"));
       }
@@ -85,6 +89,7 @@ export class GameRoom {
     if (path === "/join" && request.method === "POST") return this.join(request);
     if (path === "/recover" && request.method === "POST") return this.recover(request);
     if (path === "/notes" && request.method === "POST") return this.notesArchive(request);
+    if (path === "/end" && request.method === "POST") return this.endGameFromLanding();
     if (path === "/state") {
       const game = await this.getGame();
       if (!game) return json({ ok: true, exists: false, phase: "lobby", players: 0 });
@@ -198,7 +203,7 @@ export class GameRoom {
         case "gift-ap": message=`${actor} sent 1 AP to ${target}.`; break;
         case "gift-heart": message=`${actor} gave a heart to ${target}.`; break;
         case "take-turn": message=event.actorId===player.id?"You took an immediate turn (+1 AP).":null; break;
-        case "manual-end": message="The host ended the match."; break;
+        case "manual-end": message="The match was ended manually."; break;
         case "daily-ap": message=event.actorId===player.id?`You received ${event.amount||1} AP from the daily timer.`:null; break;
         case "match-end": message=event.targetName?`${target} won the match.`:"The match ended."; break;
       }
@@ -222,6 +227,24 @@ export class GameRoom {
     if(!actor.host)return json({error:"Only the host can view the notes archive."},403);
     if(game.phase!=="ended")return json({error:"The notes archive is available after the match ends."},409);
     return json({entries:game.notesHistory||[]});
+  }
+
+  private async endGameFromLanding(): Promise<Response> {
+    const game = await this.getGame();
+    if (!game) return json({ ok: false, ended: false, phase: "lobby", error: "There is no shared match to end." }, 404);
+    if (game.phase !== "active") {
+      return json({ ok: false, ended: false, phase: game.phase, error: "There is no active match to end." }, 409);
+    }
+    const now = Date.now();
+    game.phase = "ended";
+    game.winnerId = null;
+    game.endReason = "ended-by-request";
+    game.updatedAt = now;
+    this.recordEvent(game, "manual-end", null);
+    this.updateOnlineCursors(game);
+    await this.save(game);
+    this.broadcast(game);
+    return json({ ok: true, ended: true, phase: game.phase });
   }
 
   private async join(request: Request): Promise<Response> {
