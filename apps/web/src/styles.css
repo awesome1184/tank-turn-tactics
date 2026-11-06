@@ -14,3 +14,15 @@
 @media(max-width:1050px){.game-grid{grid-template-columns:minmax(0,1fr) 340px}.shell{padding:0 20px}.landing-grid{gap:35px;grid-template-columns:1fr 390px}}
 @media(max-width:820px){.landing{padding:25px 20px}.landing-grid{grid-template-columns:1fr;gap:28px;padding:45px 0 28px}.intro h1{font-size:58px}.join-card{max-width:500px;width:100%;margin:auto}.landing-foot{font-size:8px;gap:8px}.game-grid{grid-template-columns:1fr}.side-column{grid-template-columns:1fr 1fr}.map-panel{grid-row:1}.game-heading{align-items:start;gap:15px;flex-direction:column}}
 @media(max-width:560px){.shell{padding:0 12px}.topbar{height:70px}.brand b{font-size:11px}.brand small{font-size:9px}.brand-icon{width:36px;height:36px}.top-right{gap:8px}.connection{font-size:9px}.quiet-button{font-size:10px;padding:8px}.lobby-layout{margin:25px auto}.lobby-hero{padding:21px}.lobby-hero h1{font-size:30px}.code-box{gap:8px;padding:12px}.code-box strong{font-size:26px;letter-spacing:4px}.secondary-button{font-size:10px;padding:9px}.game-main{padding-top:23px}.game-heading h1{font-size:27px}.game-heading p{font-size:11px}.game-pills span{font-size:9px;padding:7px 9px}.map-panel{padding:12px}.map-panel .section-title{align-items:start}.legend{gap:7px;font-size:8px;flex-wrap:wrap}.legend i{width:7px;height:7px}.board{min-width:0;gap:2px;padding:5px}.tile{border-radius:2px}.tile-label{display:none}.map-help{font-size:8px}.side-column{grid-template-columns:1fr}.action-buttons{grid-template-columns:1fr 1fr}.landing-foot{letter-spacing:.5px}.features{gap:12px;font-size:11px}}
+
+/* Daily jury ballot */
+.jury-panel{border-color:#5a4c6d;background:linear-gradient(150deg,#292638,#191f2c)}
+.jury-count{font:10px 'DM Mono';color:#d2b6ef;background:#382f4a;border:1px solid #62517b;padding:5px 8px;border-radius:6px}
+.jury-description{font-size:11px;line-height:1.6;color:#b2a9c0;margin:0 0 12px}
+.jury-deadline{display:flex;align-items:center;justify-content:space-between;padding:10px 11px;background:#171a28;border:1px solid #49405a;border-radius:8px;margin-bottom:11px;color:#a99bb8;font-size:10px}
+.jury-deadline strong{font:600 12px 'DM Mono';color:#e3c6ff}
+.jury-vote-form label{display:block;color:#a99bb8;font:10px 'DM Mono';letter-spacing:.8px}
+.jury-vote-form select{display:block;width:100%;margin-top:7px;background:#171a28;color:#eee6f5;border:1px solid #55496c;border-radius:7px;padding:10px;font:12px 'DM Sans'}
+.jury-vote-button{width:100%;margin-top:9px;padding:11px 13px;display:flex;align-items:center;justify-content:center;gap:8px;background:#64468a;border:1px solid #9270b5;color:#fff;border-radius:8px;font-size:11px;font-weight:700}
+.jury-vote-button:hover:not(:disabled){background:#7655a0}
+.jury-confirmation{display:flex;align-items:center;gap:8px;padding:11px;background:#211e2b;border:1px solid #4c435b;border-radius:8px;color:#cbb9dd;font-size:10px;line-height:1.45}

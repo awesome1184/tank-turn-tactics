@@ -146,7 +146,15 @@ export class GameRoom {
   async webSocketError(socket: WebSocket): Promise<void> { await this.webSocketClose(socket); }
 
   private async getGame(): Promise<GameState | null> {
-    return (await this.state.storage.get<GameState>("game")) || null;
+    const game = (await this.state.storage.get<GameState>("game")) || null;
+    if (game) {
+      // Initialize jury fields for rooms created before the jury update.
+      if (!game.juryVotes) game.juryVotes = {};
+      if (game.juryCycleEndsAt === undefined) {
+        game.juryCycleEndsAt = game.startedAt === null ? null : game.startedAt + DAILY_AP_INTERVAL_MS;
+      }
+    }
+    return game;
   }
   private async save(game: GameState): Promise<void> { await this.state.storage.put("game", game); }
   private sendError(socket: WebSocket, message: string): void {
@@ -212,7 +220,7 @@ export class GameRoom {
     if (game.phase !== "active") return;
 
     // The jury ballot closes on the same 24-hour boundary as daily AP income.
-    if (game.juryCycleEndsAt === null && game.startedAt !== null) {
+    if (game.juryCycleEndsAt == null && game.startedAt !== null) {
       game.juryCycleEndsAt = game.startedAt + DAILY_AP_INTERVAL_MS;
     }
     if (game.juryCycleEndsAt !== null && now >= game.juryCycleEndsAt) {
@@ -260,7 +268,7 @@ export class GameRoom {
     }
     if (action.type === "sync") return;
     if (game.phase !== "active") throw new Error("The match is not active.");
-    if (!actor.alive) throw new Error("Eliminated players cannot take actions.");
+    if (!actor.alive && action.type !== "juryVote") throw new Error("Eliminated players can only cast jury votes.");
 
     switch (action.type) {
       case "move": {

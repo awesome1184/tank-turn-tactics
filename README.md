@@ -12,3 +12,4 @@ A persistent browser-based multiplayer tank tactics game. The React client is ho
 - One AP every 24 hours per living player, on a rolling schedule that keeps running while a player is offline.
 
 See [`docs/RULESET.md`](docs/RULESET.md) for the exact implemented rules and setup instructions.
+\n\nJury: eliminated players may cast one secret vote per daily cycle. A living player receiving at least three votes receives +1 bonus AP when the cycle closes. See [docs/RULESET.md](docs/RULESET.md) for exact timing and edge cases.\n
