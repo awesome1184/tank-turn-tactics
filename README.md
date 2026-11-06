@@ -1,36 +1,24 @@
 # Tank Turn Tactics
 
-A persistent browser-based multiplayer tank tactics game. The React client is hosted on GitHub Pages; an authoritative Cloudflare Worker and SQLite-backed Durable Object run one shared match.
+Persistent browser-based multiplayer tank tactics game. The React client is hosted on GitHub Pages; a Cloudflare Worker and SQLite-backed Durable Object run one shared match.
 
-## Included in v0.5
+## v0.7 features
 
-- One global game shared by everyone; there are no lobby codes or separate rooms.
-- Up to 64 players can join the shared lobby before the host starts.
-- Each browser tab has its own player session. Open another tab and join with a different callsign to simulate multiple players.
-- The first player to join automatically becomes host.
-- Host-selectable 16×16, 20×20, 24×24, and 32×32 battlefields, with obstacle counts scaled to board area.
-- Host can reset a completed match to the lobby while preserving the same players and tab sessions for another test.
-- Portable player recovery keys let a player restore their server-saved state in another browser.
-- In-game debug panel with connection status, API health checks, manual sync/reconnect, and privacy-safe diagnostic copying.
-- Tactical movement, attacks, HP, range upgrades, healing, AP transfers, and heart gifts/revivals.
-- Private Ally, Enemy, and Unmarked labels saved per player in that browser.
-- One AP every 24 hours per living player, on a rolling schedule that keeps running while a player is offline.
-- Secret daily jury ballots for eliminated players.
+- One shared game, no room codes or chat; up to 64 players.
+- Multi-tab playtesting with tab-specific player sessions.
+- 16×16, 20×20, 24×24, and 32×32 maps.
+- Lobby color picker; light-gray tiles inside your own firing range, dark-gray everywhere else.
+- Other tanks show green alive / red eliminated dots; your tank has a border.
+- Opponents cannot see your range or individual online status. Only an aggregate online headcount is shown.
+- Attacker attribution is hidden for non-lethal damage; victims can see who eliminated them.
+- Take a turn immediately grants +1 AP without affecting the daily AP timer.
+- Host can end the game at any time.
+- Private notes autosave to the server. Their revision history is available only to the host after game end.
+- A reconnect replay shows events that happened while a player was disconnected, with timestamps and 1.5-second steps.
+- Recovery keys and a developer debug menu.
 
-There is no chat. See docs/RULESET.md for the exact rules and docs/DEPLOYMENT.md for deployment details.
+## Multi-tab test
 
-## Playtest with multiple tabs
+Open a tab, join as the host, then use New player tab and join with new callsigns. Set colors in the lobby. Start the match. Use Take a turn immediately in each tab to grant AP. Close one tab, make moves from other tabs, then reopen/restore the offline player to see the While you were gone replay.
 
-1. Open the game in one tab and join with a callsign. The first player becomes host.
-2. Use New player tab in the top bar, or open the game URL in a separate tab.
-3. Join with a different callsign in each tab. Each tab gets a separate player.
-4. When everyone is in the lobby, start the match from the host tab.
-5. After the match ends, the host can select Reset match for another test. The same players remain in the lobby, so all tabs can play again.
-
-Use the Save key control to back up a player or restore it in another browser. Treat recovery keys like passwords.
-
-## Deployment
-
-The web client is at https://awesome1184.github.io/tank-turn-tactics/.
-
-The Cloudflare Worker is tank-turn-tactics-api. The multiplayer API uses one fixed Durable Object identity for the shared match, so no room or lobby IDs are needed. See docs/DEPLOYMENT.md for deployment instructions.
+After a match ends, open Debug from the host tab to retrieve the private notes history.

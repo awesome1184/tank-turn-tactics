@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BatteryCharging, Bug, ChevronRight, Copy, Crosshair, Download, Heart, KeyRound, Move, RefreshCw, Shield, Skull, Swords, Users, Zap } from "lucide-react";
 import { MAP_SIZES, MAX_PLAYERS } from "../../../packages/shared/src/contracts";
-import type { PlayerLabel, PublicGameState, PublicPlayer } from "../../../packages/shared/src/contracts";
+import type { NoteHistoryEntry, PlayerLabel, PublicGameState, PublicPlayer, PublicReplayEvent } from "../../../packages/shared/src/contracts";
 
 const API_BASE = (import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "https://tank-turn-tactics-api.awesome69421.workers.dev")).replace(/\/$/, "");
 const SESSION_KEY = "tank-turn-tactics-session-v2";
@@ -65,14 +65,20 @@ export default function App() {
   const [mode, setMode] = useState<"join" | "recover">("join");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [labels, setLabels] = useState<Labels>({});
-  const [giftAmount, setGiftAmount] = useState(1);
   const [juryTarget, setJuryTarget] = useState("");
+  const [notesDraft, setNotesDraft] = useState("");
+  const [notesArchive, setNotesArchive] = useState<NoteHistoryEntry[] | null>(null);
+  const [notesArchiveLoading, setNotesArchiveLoading] = useState(false);
+  const [replayEvents, setReplayEvents] = useState<PublicReplayEvent[]>([]);
+  const [replayIndex, setReplayIndex] = useState(0);
   const [recoveryInput, setRecoveryInput] = useState("");
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
   const [debugHealth, setDebugHealth] = useState("Not checked");
   const [now, setNow] = useState(Date.now());
   const socketRef = useRef<WebSocket | null>(null);
+  const notesDirtyRef = useRef(false);
+  const notesDraftRef = useRef("");
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
@@ -80,7 +86,28 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!session) { setGame(null); setConnection("offline"); return; }
+    if(!replayEvents.length)return;
+    const timer=window.setTimeout(()=>{
+      if(replayIndex+1>=replayEvents.length){
+        send({type:"ackReplay",lastEventId:replayEvents[replayEvents.length-1].id});
+        setReplayEvents([]);setReplayIndex(0);
+      } else setReplayIndex(index=>index+1);
+    },1500);
+    return ()=>window.clearTimeout(timer);
+  },[replayEvents,replayIndex,send]);
+
+  useEffect(() => {
+    if(!session||!notesDirtyRef.current||connection!=="online"||game?.phase==="ended")return;
+    const timer=window.setTimeout(()=>{
+      if(socketRef.current?.readyState===WebSocket.OPEN)socketRef.current.send(JSON.stringify({type:"saveNotes",notes:notesDraftRef.current}));
+    },700);
+    return ()=>window.clearTimeout(timer);
+  },[notesDraft,connection,game?.phase,session]);
+
+  useEffect(() => {
+    if (!session) {
+      setGame(null);setConnection("offline");notesDirtyRef.current=false;notesDraftRef.current="";setNotesDraft("");setNotesArchive(null);setReplayEvents([]);setReplayIndex(0);return;
+    }
     if (!API_BASE) { setError("Server URL is not configured. See README.md."); setConnection("offline"); return; }
     setLabels(readLabels(session.playerId));
     let stopped = false, retry = 0, retryId = 0;
@@ -97,10 +124,18 @@ export default function App() {
       socket.onmessage = (event) => {
         try {
           const message = JSON.parse(String(event.data));
-          if (message.type === "state") {
-            setGame(message.state as PublicGameState);
-            setSelectedId((old) => old && message.state.players.some((p: PublicPlayer) => p.id === old) ? old : null);
-          } else if (message.type === "error") setError(String(message.message || "Action rejected."));
+          if(message.type==="state"){
+            const nextState=message.state as PublicGameState;
+            setGame(nextState);
+            setSelectedId(old=>old&&nextState.players.some((p:PublicPlayer)=>p.id===old)?old:null);
+            const serverNotes=nextState.me.notes||"";
+            if(notesDirtyRef.current){if(serverNotes===notesDraftRef.current)notesDirtyRef.current=false;}
+            else{notesDraftRef.current=serverNotes;setNotesDraft(serverNotes);}
+            if(nextState.me.replayEvents?.length){
+              setReplayEvents(current=>current.length?current:nextState.me.replayEvents);
+              setReplayIndex(current=>current===0?0:current);
+            }
+          } else if(message.type==="error")setError(String(message.message||"Action rejected."));
         } catch { /* ignore malformed frame */ }
       };
       socket.onclose = () => {
@@ -130,8 +165,8 @@ export default function App() {
       const result = await api("/api/game/join", { name: name.trim() });
       const next: Session = { playerId: result.playerId, token: result.token, name: result.name || name.trim() };
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
-      setSession(next);
-      setRecoveryOpen(true);
+      notesDirtyRef.current=false;notesDraftRef.current="";setNotesDraft("");setNotesArchive(null);setReplayEvents([]);setReplayIndex(0);
+      setSession(next);setRecoveryOpen(true);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not enter the lobby."); }
     finally { setBusy(false); }
   };
@@ -142,7 +177,8 @@ export default function App() {
       const result = await api("/api/game/recover", { playerId: recovery.playerId, token: recovery.token });
       const next: Session = { playerId: result.playerId, token: recovery.token, name: result.name };
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
-      setSession(next); setMode("join"); setRecoveryInput(""); setRecoveryOpen(true);
+      notesDirtyRef.current=false;notesDraftRef.current="";setNotesDraft("");setNotesArchive(null);setReplayEvents([]);setReplayIndex(0);
+      setSession(next);setMode("join");setRecoveryInput("");setRecoveryOpen(true);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not restore this player."); }
     finally { setBusy(false); }
   };
@@ -164,9 +200,20 @@ export default function App() {
     try { const result = await api("/api/health"); setDebugHealth("Healthy · " + result.service); }
     catch (e) { setDebugHealth("Failed · " + (e instanceof Error ? e.message : "Request failed")); }
   };
+  const loadNotesArchive=async()=>{
+    if(!session)return;setNotesArchiveLoading(true);
+    try{const result=await api("/api/game/notes",{playerId:session.playerId,token:session.token});setNotesArchive(Array.isArray(result.entries)?result.entries as NoteHistoryEntry[]:[]);}
+    catch(e){setError(e instanceof Error?e.message:"Could not load notes history.");}
+    finally{setNotesArchiveLoading(false);}
+  };
+  const editNotes=(value:string)=>{notesDraftRef.current=value;notesDirtyRef.current=value!==(game?.me.notes||"");setNotesDraft(value);};
+  const skipReplay=()=>{
+    if(replayEvents.length)send({type:"ackReplay",lastEventId:replayEvents[replayEvents.length-1].id});
+    setReplayEvents([]);setReplayIndex(0);
+  };
   const copyDiagnostics = async () => {
     const report = {
-      app: "Tank Turn Tactics v0.5", apiBase: API_BASE || "not configured",
+      app: "Tank Turn Tactics v0.6", apiBase: API_BASE || "not configured",
       connection, websocketState: socketRef.current?.readyState ?? null,
       sharedMatch: true, phase: game?.phase ?? null,
       playerCount: game?.players.length ?? null, boardSize: game?.boardSize ?? null,
@@ -241,14 +288,28 @@ export default function App() {
         <button className="secondary-button" onClick={() => { socketRef.current?.close(); setConnection("connecting"); }}>Reconnect</button>
         <button className="secondary-button" onClick={copyDiagnostics}>Copy diagnostics</button>
       </div>
+      {game?.phase==="ended"&&me?.host&&<section className="notes-archive">
+        <div className="section-title"><div><div className="eyebrow">HOST-ONLY GAME RECORD</div><h3>Private notes history</h3></div></div>
+        <p>Saved revisions from every player's private notes, visible only to the host after the match ends.</p>
+        <button className="secondary-button" onClick={loadNotesArchive} disabled={notesArchiveLoading}>{notesArchiveLoading?"Loading…":"Load notes history"}</button>
+        {notesArchive&&<div className="notes-archive-list">{notesArchive.length?notesArchive.map(entry=><article key={entry.id}><div><b>{entry.playerName}</b><time>{new Date(entry.at).toLocaleString()}</time></div><pre>{entry.text||"(cleared notes)"}</pre></article>):<small>No notes were saved this match.</small>}</div>}
+      </section>}
       <details><summary>Show public match state</summary><pre>{game ? JSON.stringify({ phase: game.phase, boardSize: game.boardSize, players: game.players, obstacles: game.obstacles }, null, 2) : "No match state received yet."}</pre></details>
       <small className="debug-note">Diagnostics do not include your recovery token or API credentials.</small>
     </section>}
     {error && <div className="toast">{error}<button onClick={() => setError("")}>×</button></div>}
+    {replayEvents.length>0&&<div className="replay-overlay" role="dialog" aria-modal="true" aria-label="While you were gone replay">
+      <section className="replay-card"><div className="replay-heading"><div><div className="eyebrow">WHILE YOU WERE GONE</div><h2>Match replay</h2></div><small>{replayIndex+1} / {replayEvents.length}</small></div>
+        <time>{new Date(replayEvents[replayIndex].at).toLocaleString()}</time>
+        <p className="replay-message">{replayEvents[replayIndex].message}</p>
+        <div className="replay-progress"><i style={{width:((replayIndex+1)/replayEvents.length*100)+"%"}}/></div>
+        <div className="replay-footer"><small>Each event advances every 1.5 seconds.</small><button className="secondary-button" onClick={skipReplay}>Skip replay</button></div>
+      </section>
+    </div>}
     {!game ? <div className="loading panel"><RefreshCw className="spin"/><h2>Connecting to the shared game</h2><p>Restoring {session.name}'s player session.</p><button className="quiet-button" onClick={leave}>Switch player</button></div> :
     game.phase === "lobby" ? <main className="lobby-layout">
       <section className="panel lobby-hero"><div className="eyebrow">ONE SHARED MATCH · WAITING FOR PLAYERS</div><h1>Assemble your crew.</h1><p>Open the game in another tab and join with a different callsign to add another tank. Once everyone has joined, the host starts the match.</p>
-        <div className="lobby-meta"><span><Users size={16}/> {game.players.length} / {MAX_PLAYERS} players</span><span>Waiting for host</span></div>
+        <div className="lobby-meta"><span><Users size={16}/> {game.players.length} / {MAX_PLAYERS} players</span><span>{game.onlineCount} {game.onlineCount===1?"person":"people"} online</span></div>
       </section>
       <section className="panel lobby-settings">
         <div className="section-title"><div><div className="eyebrow">MATCH CONFIGURATION</div><h2>Lobby settings</h2></div><small>{me?.host ? "Host controls" : "View only"}</small></div>
@@ -258,22 +319,24 @@ export default function App() {
             ? <select aria-label="Battlefield size" value={game.boardSize} disabled={connection !== "online"} onChange={(e) => send({ type: "setMapSize", mapSize: Number(e.target.value) })}>{MAP_SIZES.map((size) => <option key={size} value={size}>{size} × {size}</option>)}</select>
             : <strong>{game.boardSize} × {game.boardSize}</strong>}
         </div>
-        <p className="micro-note">Only the host can change this before the match starts. The setting locks when the battlefield is deployed.</p>
+        <div className="color-setting-row"><div><b>Your tank color</b><small>Choose your map color before the match starts.</small></div><input aria-label="Your tank color" type="color" value={me?.color||"#57a6e8"} disabled={connection!=="online"} onChange={e=>send({type:"setColor",color:e.target.value})}/></div>
+        <p className="micro-note">Only the host can change map size. Every player chooses their own tank color before the match.</p>
       </section>
       <section className="panel lobby-roster"><div className="section-title"><div><div className="eyebrow">THE ROSTER</div><h2>Players</h2></div><small>Names are public</small></div>
-        {game.players.map((p, i) => <div className="roster-row" key={p.id}><span className="roster-number">{i + 1}</span><div><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.host ? "Lobby host" : "Ready to deploy"}</small></div>{p.host && <span className="host-chip">HOST</span>}</div>)}
+        {game.players.map((p, i) => <div className="roster-row" key={p.id}><span className="roster-number">{i + 1}</span><i className="roster-color" style={{backgroundColor:p.color}}/><div><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.host ? "Lobby host" : "Ready to deploy"}</small></div>{p.host && <span className="host-chip">HOST</span>}</div>)}
         {me?.host ? <button className="primary-button" disabled={game.players.length < 2} onClick={() => send({ type: "start" })}>Start match <ChevronRight/></button> : <p className="waiting">Waiting for the host to start the match…</p>}
         {game.players.length < 2 && <small className="muted">Invite at least one other player to unlock Start match.</small>}
       </section>
     </main> :
     <main className="game-main">
-      <div className="game-heading"><div><div className="eyebrow">{game.phase === "ended" ? "MATCH COMPLETE" : "LIVE MATCH"} · SHARED GAME</div><h1>{game.phase === "ended" ? "The dust has settled." : "Command your tank."}</h1><p>{game.phase === "ended" ? (game.players.find((p) => p.id === game.winnerId)?.name || "A player") + " is the last tank standing." : "Every move matters. Choose each action carefully."}</p>{game.phase === "ended" && me?.host && <button className="primary-button reset-match-button" onClick={() => send({ type: "reset" })}>Reset match for another test <RefreshCw size={16}/></button>}</div><div className="game-pills"><span><Users size={15}/> {game.players.length} players</span><span>{game.boardSize} × {game.boardSize} grid</span></div></div>
+      <div className="game-heading"><div><div className="eyebrow">{game.phase==="ended"?"MATCH COMPLETE":"LIVE MATCH"} · SHARED GAME</div><h1>{game.phase==="ended"?(game.endReason==="ended-by-request"||game.endReason==="ended-by-host"?"The game was ended.":"The dust has settled."):"Command your tank."}</h1><p>{game.phase==="ended"?(game.winnerId?(game.players.find(p=>p.id===game.winnerId)?.name||"A player")+" is the last tank standing.":"The match was ended manually."):"Every move matters. Choose each action carefully."}</p>{game.phase==="active"&&me?.host&&<button className="danger-button" onClick={()=>{if(window.confirm("End the game for everyone now?"))send({type:"endGame"});}}>End the game <Shield size={16}/></button>}{game.phase==="ended"&&me?.host&&<button className="primary-button reset-match-button" onClick={()=>send({type:"reset"})}>Reset match for another test <RefreshCw size={16}/></button>}</div><div className="game-pills"><span><Users size={15}/> {game.players.length} players</span><span>{game.onlineCount} {game.onlineCount===1?"person":"people"} online</span><span>{game.boardSize} × {game.boardSize} grid</span></div></div>
       <div className="game-grid">
         <section className="panel map-panel"><div className="section-title"><div><div className="eyebrow">TACTICAL MAP</div><h2>Battlefield</h2></div><div className="legend"><span><i className="legend-you"/> You</span><span><i className="legend-player"/> Player</span><span><i className="legend-rock"/> Obstacle</span></div></div>
           <div className="board-wrap"><div className={"board " + (game.boardSize > 20 ? "board-large" : "")} style={{ gridTemplateColumns: "repeat(" + game.boardSize + ", minmax(0, 1fr))" }}>{Array.from({ length: game.boardSize * game.boardSize }, (_, i) => {
-            const x = i % game.boardSize, y = Math.floor(i / game.boardSize), p = occupants.get(x + "," + y), rock = obstacles.has(x + "," + y);
-            return <button key={x + "-" + y} className={"tile " + (rock ? "rock-tile " : "") + (p ? "occupied " : "") + (p?.id === session.playerId ? "self-tile " : "") + (p?.id === selectedId ? "selected " : "") + (p && !p.alive ? "dead-tile" : "")} title={p ? p.name + " · " + p.hp + " HP" : rock ? "Obstacle" : "Tile " + (x + 1) + ", " + (y + 1)} onClick={() => p ? setSelectedId(p.id) : canAct && !rock && send({ type: "move", x, y })}>
-              {rock ? <span className="rock">◆</span> : p ? <><span className="tank">{p.alive ? "▰" : "✕"}</span>{game.boardSize <= 20 && <span className="tile-label">{p.name.slice(0, 6)}</span>}</> : null}
+            const x=i%game.boardSize,y=Math.floor(i/game.boardSize),p=occupants.get(x+","+y),rock=obstacles.has(x+","+y);
+            const inMyRange=me?.x!==null&&me?.x!==undefined&&me?.y!==null&&me?.y!==undefined&&Math.max(Math.abs(x-me.x),Math.abs(y-me.y))<=game.me.range;
+            return <button key={x+"-"+y} className={"tile "+(inMyRange?"range-tile ":"outside-range-tile ")+(rock?"rock-tile ":"")+(p?"occupied ":"")+(p?.id===session.playerId?"self-tile ":"")+(p?.id===selectedId?"selected ":"")+(p&&!p.alive?"dead-tile":"")} title={p?p.name+" · "+p.hp+" HP":rock?"Obstacle":"Tile "+(x+1)+", "+(y+1)} onClick={()=>p?setSelectedId(p.id):canAct&&!rock&&send({type:"move",x,y})}>
+              {rock?<span className="rock">◆</span>:p?<><span className="tank" style={{color:p.color}}>{p.alive?"▰":"✕"}</span>{p.id!==session.playerId&&<span className={"tank-state-dot "+(p.alive?"alive":"dead")}/>}{game.boardSize<=20&&<span className="tile-label">{p.name.slice(0,6)}</span>}</>:null}
             </button>;
           })}</div></div>
           <div className="map-help"><span><Move size={14}/> Click an empty tile to move (AP per step).</span><span>8 directions</span></div>
@@ -281,16 +344,17 @@ export default function App() {
         <aside className="side-column">
           <section className="panel stats-panel"><div className="eyebrow">YOUR TANK</div><h2>{me?.name || session.name}</h2><div className="tank-status">{me?.alive ? "Active tank" : "Jury · eliminated"}</div>
             <div className="stat-grid"><div className="stat-card"><small>HEALTH</small><strong className="hp-number">{me?.hp ?? 0}<i> / 3</i></strong><div className="hearts">{[0,1,2].map(i => <Heart key={i} size={15} fill={i < (me?.hp || 0) ? "currentColor" : "none"}/>)}</div></div><div className="stat-card"><small>ACTION POINTS</small><strong className="ap-number">{game.me.ap}</strong><div className="ap-clock"><BatteryCharging size={13}/> +1 in {game.me.nextApAt ? duration(game.me.nextApAt - now) : "Paused"}</div></div></div>
-            <div className="stat-line"><span>Attack range</span><b>{me?.range ?? 2} tiles</b></div><div className="stat-line"><span>Next AP</span><b>{game.me.nextApAt ? new Date(game.me.nextApAt).toLocaleString() : "Paused"}</b></div>
+            <div className="stat-line"><span>Next AP</span><b>{game.me.nextApAt?new Date(game.me.nextApAt).toLocaleString():"Paused"}</b></div>
+            {!me?.alive&&game.me.killerName&&<div className="killer-note">Eliminated by <b>{game.me.killerName}</b></div>}
+            {canAct&&<button className="take-turn-button" onClick={()=>send({type:"takeTurn"})} disabled={connection!=="online"}><Zap size={15}/> Take a turn immediately <small>+1 AP · daily timer unchanged</small></button>}
           </section>
           <section className="panel actions-panel"><div className="section-title"><div><div className="eyebrow">COMMANDS</div><h2>Actions</h2></div><small>AP is private</small></div>
-            <div className="target-card">{target ? <><div><small>SELECTED PLAYER</small><b>{target.name}{target.id === me?.id ? " · YOU" : ""}</b></div><span className={target.alive ? "alive-tag" : "dead-tag"}>{target.alive ? "ALIVE" : "ELIMINATED"}</span><div className="target-stats">{target.hp} HP <span>Range {target.range}</span><span>({(target.x ?? -1) + 1}, {(target.y ?? -1) + 1})</span></div></> : <div className="no-target"><Crosshair size={17}/> Select a tank on the map or roster.</div>}</div>
-            {canAct ? <><div className="gift-select"><span>AP gift amount</span><select value={giftAmount} onChange={e => setGiftAmount(Number(e.target.value))}><option value={1}>1 AP</option><option value={2}>2 AP</option><option value={3}>3 AP</option></select></div>
-              <div className="action-buttons">
+            <div className="target-card">{target ? <><div><small>SELECTED PLAYER</small><b>{target.name}{target.id === me?.id ? " · YOU" : ""}</b></div><span className={target.alive ? "alive-tag" : "dead-tag"}>{target.alive ? "ALIVE" : "ELIMINATED"}</span><div className="target-stats">{target.hp} HP <span>({(target.x ?? -1) + 1}, {(target.y ?? -1) + 1})</span></div></> : <div className="no-target"><Crosshair size={17}/> Select a tank on the map or roster.</div>}</div>
+            {canAct ? <><div className="action-buttons">
                 <button disabled={!target || target.id === me?.id || !target.alive || game.me.ap < 1} onClick={() => target && send({ type: "attack", targetId: target.id })}><Swords/><span><b>Shoot</b><small>1 AP · 1 damage</small></span></button>
                 <button disabled={game.me.ap < 3 || (me?.hp || 3) >= 3} onClick={() => send({ type: "heal" })}><Heart/><span><b>Repair</b><small>3 AP · +1 HP</small></span></button>
                 <button disabled={game.me.ap < 3} onClick={() => send({ type: "upgradeRange" })}><Crosshair/><span><b>Upgrade range</b><small>3 AP · +1 tile</small></span></button>
-                <button disabled={!target || target.id === me?.id || !target.alive || game.me.ap < giftAmount} onClick={() => target && send({ type: "giftAp", targetId: target.id, amount: giftAmount })}><Zap/><span><b>Gift AP</b><small>Transfer 1–3 AP</small></span></button>
+                <button disabled={!target || target.id === me?.id || !target.alive || game.me.ap < 1} onClick={() => target && send({ type: "giftAp", targetId: target.id, amount: 1 })}><Zap/><span><b>Gift 1 AP</b><small>Click to transfer</small></span></button>
                 <button className="action-wide" disabled={!target || target.id === me?.id || (me?.hp || 0) <= 1 || (!!target.alive && target.hp >= 3)} onClick={() => target && send({ type: "giftHp", targetId: target.id })}><Heart/><span><b>Give a heart</b><small>Free · can revive an eliminated player</small></span></button>
               </div>
             </> : <div className="eliminated-note"><Skull/> {game.phase === "ended" ? "This match has ended." : "You are eliminated. Another player can revive you with a heart gift."}</div>}
@@ -304,14 +368,18 @@ export default function App() {
               : <div className="jury-vote-form"><label>CHOOSE A LIVING PLAYER<select value={effectiveJuryTarget} onChange={(e) => setJuryTarget(e.target.value)}>{juryCandidates.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><button className="jury-vote-button" disabled={!effectiveJuryTarget || connection !== "online"} onClick={() => send({ type: "juryVote", targetId: effectiveJuryTarget })}>Cast secret vote <ChevronRight size={16}/></button></div>
             ) : <div className="jury-confirmation"><Skull size={16}/> Only eliminated players can cast a jury vote. Votes and AP balances are private.</div>}
           </section>}
+          <section className="panel notes-panel"><div className="section-title"><div><div className="eyebrow">PERSONAL</div><h2>Private notes</h2></div><small>{notesDirtyRef.current?"Saving privately…":"Saved privately"}</small></div>
+            <textarea value={notesDraft} maxLength={5000} rows={5} placeholder="Keep private notes about the match, players, plans, or observations…" onChange={e=>editNotes(e.target.value)} onBlur={()=>{if(notesDirtyRef.current&&socketRef.current?.readyState===WebSocket.OPEN)socketRef.current.send(JSON.stringify({type:"saveNotes",notes:notesDraftRef.current}));}}/>
+            <small className="notes-count">{notesDraft.length}/5000 characters</small>
+          </section>
           <section className="panel roster-panel"><div className="section-title"><div><div className="eyebrow">FIELD INTELLIGENCE</div><h2>Players</h2></div><small>{game.players.filter(p => p.alive).length} alive</small></div>
-            {game.players.map(p => <div className={"field-row " + (p.id === selectedId ? "focused" : "")} key={p.id}><button className="field-person" onClick={() => setSelectedId(p.id)}><i className={p.id === session.playerId ? "you-dot" : p.alive ? "player-dot" : "dead-dot"}/><span><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.alive ? p.hp + " HP · range " + p.range : "Eliminated"}</small></span></button><select aria-label={"Label " + p.name} value={labels[p.id] || "unmarked"} onChange={e => updateLabel(p.id, e.target.value as PlayerLabel)}><option value="unmarked">Unmarked</option><option value="ally">Ally</option><option value="enemy">Enemy</option></select></div>)}
+            {game.players.map(p => <div className={"field-row " + (p.id === selectedId ? "focused" : "")} key={p.id}><button className="field-person" onClick={() => setSelectedId(p.id)}><i className={p.id === session.playerId ? "you-dot" : p.alive ? "player-dot" : "dead-dot"}/><span><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.alive ? p.hp + " HP" : "Eliminated"}</small></span></button><select aria-label={"Label " + p.name} value={labels[p.id] || "unmarked"} onChange={e => updateLabel(p.id, e.target.value as PlayerLabel)}><option value="unmarked">Unmarked</option><option value="ally">Ally</option><option value="enemy">Enemy</option></select></div>)}
             <p className="micro-note">Labels are private notes saved in this browser. They do not create teams or change damage.</p>
           </section>
         </aside>
       </div>
       <p className="server-note"><Shield size={14}/> Server-authoritative match · AP and actions are validated by the game server.</p>
     </main>}
-    <footer className="footer">TANK TURN TACTICS <span>·</span> v0.5 · ONE SHARED MATCH</footer>
+    <footer className="footer">TANK TURN TACTICS <span>·</span> v0.6 · ONE SHARED MATCH</footer>
   </div>;
 }
