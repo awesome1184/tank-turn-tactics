@@ -48,21 +48,12 @@ export default {
       if (url.pathname === "/api/game/ws") {
         return stub.fetch(new Request("https://game.internal/ws" + url.search, request));
       }
-      if (url.pathname === "/api/game/state" && url.searchParams.get("end-now") === "1" && request.method === "GET") {
-        return cors(await stub.fetch("https://game.internal/state?end-now=1"));
-      }
       if (url.pathname === "/api/game/state" && request.method === "GET") {
         return cors(await stub.fetch("https://game.internal/state"));
-      }
-      if (url.pathname === "/api/game/state" && request.method === "POST") {
-        return cors(await stub.fetch("https://game.internal/state", {method:"POST"}));
       }
       if (url.pathname === "/api/game/notes" && request.method === "POST") {
         const body = await request.json() as { playerId?: string; token?: string };
         return cors(await stub.fetch("https://game.internal/notes", {method:"POST",body:JSON.stringify(body)}));
-      }
-      if (url.pathname === "/api/game/end-now" && request.method === "POST") {
-        return cors(await stub.fetch("https://game.internal/end-now", {method:"POST"}));
       }
       return cors(json({ error: "Not found." }, 404));
     } catch (error) {
@@ -90,13 +81,10 @@ export class GameRoom {
   private async route(request: Request): Promise<Response> {
     const routeUrl=new URL(request.url);
     const path=routeUrl.pathname;
-    if(path==="/state"&&routeUrl.searchParams.get("end-now")==="1")return this.endCurrentGame();
     if (path === "/ws") return this.connect(request);
     if (path === "/join" && request.method === "POST") return this.join(request);
     if (path === "/recover" && request.method === "POST") return this.recover(request);
     if (path === "/notes" && request.method === "POST") return this.notesArchive(request);
-    if (path === "/end-now" && request.method === "POST") return this.endCurrentGame();
-    if (path === "/state" && request.method === "POST") return this.endCurrentGame();
     if (path === "/state") {
       const game = await this.getGame();
       if (!game) return json({ ok: true, exists: false, phase: "lobby", players: 0 });
@@ -234,17 +222,6 @@ export class GameRoom {
     if(!actor.host)return json({error:"Only the host can view the notes archive."},403);
     if(game.phase!=="ended")return json({error:"The notes archive is available after the match ends."},409);
     return json({entries:game.notesHistory||[]});
-  }
-
-  private async endCurrentGame():Promise<Response>{
-    const game=await this.getGame();
-    if(!game)return json({ok:true,ended:false,reason:"No shared game exists."});
-    if(game.phase!=="active")return json({ok:true,ended:false,phase:game.phase,reason:"There is no active match to end."});
-    game.phase="ended";game.winnerId=null;game.endReason="ended-by-request";game.updatedAt=Date.now();
-    this.recordEvent(game,"manual-end",null);
-    this.updateOnlineCursors(game);
-    await this.save(game);this.broadcast(game);
-    return json({ok:true,ended:true,phase:game.phase,reason:"The active match was ended."});
   }
 
   private async join(request: Request): Promise<Response> {

@@ -27,16 +27,3 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: End the currently active match (one-time owner request)
-        run: |
-          STATE=$(curl --fail --silent --show-error https://tank-turn-tactics-api.awesome69421.workers.dev/api/game/state)
-          echo "Before: $STATE"
-          if [[ "$STATE" == *'"phase":"active"'* ]]; then
-            RESULT=$(curl --fail-with-body --silent --show-error "https://tank-turn-tactics-api.awesome69421.workers.dev/api/game/state?end-now=1")
-            echo "End result: $RESULT"
-            VERIFY=$(curl --fail --silent --show-error https://tank-turn-tactics-api.awesome69421.workers.dev/api/game/state)
-            echo "After: $VERIFY"
-            [[ "$VERIFY" == *'"phase":"ended"'* ]]
-          else
-            echo "No active shared match to end."
-          fi
