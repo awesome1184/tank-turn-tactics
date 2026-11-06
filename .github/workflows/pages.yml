@@ -24,6 +24,8 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
+      - name: Typecheck client and server
+        run: npm run typecheck
       - name: Build
         run: npm run build --workspace @tank-turn-tactics/web
         env:
