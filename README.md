@@ -12,7 +12,7 @@ Persistent browser-based multiplayer tank tactics game. The React client is host
 - Opponents cannot see your range or individual online status. Only an aggregate online headcount is shown.
 - Attacker attribution is hidden for non-lethal damage; victims can see who eliminated them.
 - Take a turn immediately grants +1 AP without affecting the daily AP timer.
-- Host can end the game at any time.
+- Anyone can end an active playtest from the login screen without signing in; the in-game end control remains host-only.
 - Private notes autosave to the server. Their revision history is available only to the host after game end.
 - A reconnect replay shows events that happened while a player was disconnected, with timestamps and 1.5-second steps.
 - Recovery keys and a developer debug menu.
