@@ -32,6 +32,12 @@ export default {
     const url = new URL(request.url);
     try {
       const stub = stubFor(env);
+      if (url.pathname === "/api/game/status" && request.method === "GET") {
+        return cors(await stub.fetch("https://game.internal/status"));
+      }
+      if (url.pathname === "/api/game/reset" && request.method === "POST") {
+        return cors(await stub.fetch("https://game.internal/reset", { method: "POST" }));
+      }
       if (url.pathname === "/api/game/join" && request.method === "POST") {
         const body = await request.json() as { name?: unknown };
         return cors(await stub.fetch("https://game.internal/join", {
@@ -78,6 +84,8 @@ export class GameRoom {
     const routeUrl=new URL(request.url);
     const path=routeUrl.pathname;
     if (path === "/ws") return this.connect(request);
+    if (path === "/status" && request.method === "GET") return this.status();
+    if (path === "/reset" && request.method === "POST") return this.reset();
     if (path === "/join" && request.method === "POST") return this.join(request);
     if (path === "/recover" && request.method === "POST") return this.recover(request);
     if (path === "/notes" && request.method === "POST") return this.notesArchive(request);
@@ -136,6 +144,24 @@ export class GameRoom {
   }
 
   async webSocketError(socket: WebSocket): Promise<void> { await this.webSocketClose(socket); }
+
+  private async status(): Promise<Response> {
+    const game = await this.getGame();
+    return json({ phase: game?.phase ?? null, playerCount: game?.players.length ?? 0 });
+  }
+
+  // Public by design for playtesting: anyone on the login screen can discard
+  // the current shared match and let the next player create a fresh lobby.
+  private async reset(): Promise<Response> {
+    const game = await this.getGame();
+    if (!game) return json({ success: true, reset: false });
+
+    await this.state.storage.delete("game");
+    for (const socket of this.state.getWebSockets()) {
+      try { socket.close(1008, "Shared match reset."); } catch { /* already closed */ }
+    }
+    return json({ success: true, reset: true });
+  }
 
   private async getGame(): Promise<GameState | null> {
     const game = (await this.state.storage.get<GameState>("game")) || null;
