@@ -73,6 +73,7 @@ const cors = (response: Response) => {
   return new Response(response.body, { status: response.status, headers });
 };
 const stubFor = (env: Env) => env.ROOMS.get(env.ROOMS.idFromName("shared-game-v1"));
+const GAME_SAVE_VERSION = 2;
 const PLAYER_COLORS=["#57a6e8","#ef7373","#65c98c","#e5b85c","#b18ae8","#4bc8c8","#ed9560","#d47bc1"];
 function playerColor(index:number):string{return PLAYER_COLORS[index%PLAYER_COLORS.length];}
 function makeToken(): string { return crypto.randomUUID() + crypto.randomUUID().replaceAll("-", ""); }
@@ -331,22 +332,48 @@ export class GameRoom {
   private async getGame(): Promise<GameState | null> {
     const game = (await this.state.storage.get<GameState>("game")) || null;
     if (game) {
-      // Initialize jury fields for rooms created before the jury update.
-      if (!game.juryVotes) game.juryVotes = {};
-      if (game.juryCycleEndsAt === undefined) game.juryCycleEndsAt = game.startedAt === null ? null : game.startedAt + DAILY_AP_INTERVAL_MS;
-      if (!game.notesHistory) game.notesHistory=[];
-      if (game.endReason === undefined) game.endReason=null;
-      if (!game.events) game.events=[];
-      if (!game.nextEventId) game.nextEventId=game.events.reduce((max,event)=>Math.max(max,event.id),0)+1;
-      if (!game.webSocketTickets) game.webSocketTickets = {};
-      for (const [index,player] of game.players.entries()) {
-        if (!player.color) player.color=playerColor(index);
-        if (player.notes===undefined) player.notes="";
-        if (player.killedByName===undefined) player.killedByName=null;
-        if (player.lastSeenEventId===undefined) player.lastSeenEventId=game.nextEventId-1;
-        if (player.replayEvents===undefined) player.replayEvents=[];
-        if (player.lastConnectedAt===undefined) player.lastConnectedAt=player.joinedAt;
+      let migrated = false;
+
+      // Version 2 adds 10x10 as a supported map size. This is an additive
+      // migration: keep every existing player, credential, stat, note, and
+      // match record. Existing supported map sizes remain unchanged.
+      if (game.saveVersion !== GAME_SAVE_VERSION) {
+        game.saveVersion = GAME_SAVE_VERSION;
+        migrated = true;
       }
+      const savedBoardSize = Number(game.boardSize);
+      const supportedBoardSize = MAP_SIZES.find((size) => size === savedBoardSize) ?? BOARD_SIZE;
+      if (game.boardSize !== supportedBoardSize) {
+        game.boardSize = supportedBoardSize;
+        migrated = true;
+      }
+
+      // Initialize fields introduced by earlier updates without replacing
+      // the saved game or its player records.
+      if (!game.juryVotes) { game.juryVotes = {}; migrated = true; }
+      if (game.juryCycleEndsAt === undefined) {
+        game.juryCycleEndsAt = game.startedAt === null ? null : game.startedAt + DAILY_AP_INTERVAL_MS;
+        migrated = true;
+      }
+      if (!game.notesHistory) { game.notesHistory = []; migrated = true; }
+      if (game.endReason === undefined) { game.endReason = null; migrated = true; }
+      if (!game.events) { game.events = []; migrated = true; }
+      if (!game.nextEventId) {
+        game.nextEventId = game.events.reduce((max, event) => Math.max(max, event.id), 0) + 1;
+        migrated = true;
+      }
+      if (!game.webSocketTickets) { game.webSocketTickets = {}; migrated = true; }
+      for (const [index, player] of game.players.entries()) {
+        if (!player.color) { player.color = playerColor(index); migrated = true; }
+        if (player.notes === undefined) { player.notes = ""; migrated = true; }
+        if (player.killedByName === undefined) { player.killedByName = null; migrated = true; }
+        if (player.lastSeenEventId === undefined) { player.lastSeenEventId = game.nextEventId - 1; migrated = true; }
+        if (player.replayEvents === undefined) { player.replayEvents = []; migrated = true; }
+        if (player.lastConnectedAt === undefined) { player.lastConnectedAt = player.joinedAt; migrated = true; }
+      }
+
+      // Persist once so existing saves are upgraded automatically on first read.
+      if (migrated) await this.save(game);
     }
     return game;
   }
@@ -506,6 +533,7 @@ export class GameRoom {
         alive: true, host: true, joinedAt: now, lastConnectedAt: now, nextApAt: null, online: false,
       };
       game = {
+        saveVersion: GAME_SAVE_VERSION,
         phase: "lobby", hostId: player.id, createdAt: now, startedAt: null,
         updatedAt: now, boardSize: BOARD_SIZE, obstacles: [], players: [player],
         winnerId:null,endReason:null,juryCycleEndsAt:null,juryVotes:{},notesHistory:[],events:[],nextEventId:1,
