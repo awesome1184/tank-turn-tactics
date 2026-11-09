@@ -345,6 +345,7 @@ export class GameRoom {
         if (player.killedByName===undefined) player.killedByName=null;
         if (player.lastSeenEventId===undefined) player.lastSeenEventId=game.nextEventId-1;
         if (player.replayEvents===undefined) player.replayEvents=[];
+        if (player.lastConnectedAt===undefined) player.lastConnectedAt=player.joinedAt;
       }
     }
     return game;
@@ -502,7 +503,7 @@ export class GameRoom {
         id: crypto.randomUUID(), token: makeToken(), name: cleanName(body.name),
         color:playerColor(0),notes:"",killedByName:null,lastSeenEventId:0,replayEvents:[],
         hp: STARTING_HP, ap: STARTING_AP, range: STARTING_RANGE, x: null, y: null,
-        alive: true, host: true, joinedAt: now, nextApAt: null, online: false,
+        alive: true, host: true, joinedAt: now, lastConnectedAt: now, nextApAt: null, online: false,
       };
       game = {
         phase: "lobby", hostId: player.id, createdAt: now, startedAt: null,
@@ -522,7 +523,7 @@ export class GameRoom {
       id: crypto.randomUUID(), token: makeToken(), name: cleanName(body.name),
       color:playerColor(game.players.length),notes:"",killedByName:null,lastSeenEventId:(game.nextEventId||1)-1,replayEvents:[],
       hp: STARTING_HP, ap: STARTING_AP, range: STARTING_RANGE, x: null, y: null,
-      alive: true, host: firstPlayer, joinedAt: now, nextApAt: null, online: false,
+      alive: true, host: firstPlayer, joinedAt: now, lastConnectedAt: now, nextApAt: null, online: false,
     };
     if (firstPlayer) game.hostId = player.id;
     game.players.push(player);
@@ -574,7 +575,8 @@ export class GameRoom {
       await this.save(game);
       return new Response("Too many connections for this player", { status: 429 });
     }
-    this.applyDailyAp(game,Date.now());
+    const connectedAt=Date.now();
+    this.applyDailyAp(game,connectedAt);
     const wasOnline=player.online;
     if(!wasOnline){
       const lastSeen=player.lastSeenEventId||0;
@@ -588,9 +590,10 @@ export class GameRoom {
     this.state.acceptWebSocket(server, [player.id]);
     server.serializeAttachment({ playerId: player.id, token: player.token });
     player.online = true;
+    player.lastConnectedAt = connectedAt;
     player.lastSeenEventId=player.replayEvents.length?player.lastSeenEventId:(game.nextEventId||1)-1;
     this.updateOnlineCursors(game);
-    game.updatedAt = Date.now();
+    game.updatedAt = connectedAt;
     await this.save(game);
     this.broadcast(game);
     return new Response(null, { status: 101, webSocket: client });
@@ -639,6 +642,19 @@ export class GameRoom {
   }
 
   private applyAction(game: GameState, actor: Player, action: ClientAction, now: number): void {
+    if (action.type === "claimHost") {
+      if (game.phase !== "lobby") throw new Error("Host can only be changed before the match starts.");
+      if (actor.host) return;
+      const currentHost = game.players.find(player => player.id === game.hostId) || game.players.find(player => player.host);
+      const lastConnectedAt = currentHost?.lastConnectedAt ?? currentHost?.joinedAt ?? now;
+      if (currentHost?.online || now - lastConnectedAt < 5 * 60 * 1000) {
+        throw new Error("The current host must be offline for five minutes before another player can take over.");
+      }
+      if (currentHost) currentHost.host = false;
+      actor.host = true;
+      game.hostId = actor.id;
+      return;
+    }
     if (action.type === "ackReplay") {
       const latest=(game.nextEventId||1)-1;
       const last=Number(action.lastEventId);
@@ -845,10 +861,13 @@ export class GameRoom {
   }
 
   private publicState(game: GameState, player: Player): PublicGameState {
+    const host = game.players.find(p => p.id === game.hostId) || game.players.find(p => p.host);
     return {
       phase:game.phase,createdAt:game.createdAt,startedAt:game.startedAt,boardSize:game.boardSize,
       obstacles:game.obstacles,winnerId:game.winnerId,endReason:game.endReason||null,
       onlineCount:game.players.filter(p=>p.online).length,
+      hostOnline:host?.online ?? false,
+      hostLastConnectedAt:host?.lastConnectedAt ?? null,
       eventLog:this.publicEventLog(game),
       players:game.players.map(({id,name,color,hp,x,y,alive,host})=>({id,name,color,hp,x,y,alive,host})),
       jury:{memberCount:game.players.filter(p=>!p.alive).length,cycleEndsAt:game.juryCycleEndsAt},

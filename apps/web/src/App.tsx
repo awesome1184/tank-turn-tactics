@@ -465,6 +465,7 @@ export default function App() {
       </section>
       <section className="panel lobby-roster"><div className="section-title"><div><div className="eyebrow">THE ROSTER</div><h2>Players</h2></div><small>Names are public</small></div>
         {game.players.map((p, i) => <div className="roster-row" key={p.id}><span className="roster-number">{i + 1}</span><i className="roster-color" style={{backgroundColor:p.color}}/><div><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.host ? "Lobby host" : "Ready to start"}</small></div>{p.host && <span className="host-chip">HOST</span>}{me?.host&&p.id!==me.id&&<button className="kick-button" onClick={()=>kickPlayer(p)} title={"Remove "+p.name}><UserX size={13}/> Kick</button>}</div>)}
+        {!me?.host && !game.hostOnline && game.hostLastConnectedAt !== null && now - game.hostLastConnectedAt >= 5 * 60 * 1000 && <button className="secondary-button host-takeover-button" onClick={() => send({type:"claimHost"})}>Take over lobby host</button>}
         {me?.host ? <button className="primary-button" disabled={game.players.length < 2} onClick={() => send({ type: "start" })}>Start match <ChevronRight/></button> : <p className="waiting">Waiting for the host to start the match…</p>}
         {game.players.length < 2 && <small className="muted">Invite at least one other player to unlock Start match.</small>}
       </section>
