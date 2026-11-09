@@ -15,11 +15,13 @@ jobs:
       group: cloudflare-worker
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
       - run: npm install --no-fund
+      - name: Check dependencies for high-severity vulnerabilities
+        run: npm audit --audit-level=high
       - name: Typecheck client and server
         run: npm run typecheck
       - name: Deploy Cloudflare Worker

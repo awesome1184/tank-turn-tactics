@@ -171,7 +171,7 @@ export class GameRoom {
     await this.exclusive(() => this.handleSocketMessage(socket, message));
   }
 
-  private allowSocketMessage(socket: WebSocket, playerId: string, isSync: boolean, now: number): boolean {
+  private allowSocketMessage(socket: WebSocket, playerId: string, category: "raw" | "sync" | "action", now: number): boolean {
     let limit = this.messageLimits.get(playerId);
     if (!limit) {
       limit = { windowStart: now, total: 0, actions: 0, lastSyncAt: 0, violationStart: now, violations: 0 };
@@ -186,18 +186,19 @@ export class GameRoom {
       limit.violationStart = now;
       limit.violations = 0;
     }
+
     let rejected = false;
-    if (limit.total >= 20) rejected = true;
-    else {
-      limit.total += 1;
-      if (isSync) {
-        if (now - limit.lastSyncAt < 2000) rejected = true;
-        else limit.lastSyncAt = now;
-      } else {
-        if (limit.actions >= 5) rejected = true;
-        else limit.actions += 1;
-      }
+    if (category === "raw") {
+      if (limit.total >= 20) rejected = true;
+      else limit.total += 1;
+    } else if (category === "sync") {
+      if (now - limit.lastSyncAt < 2000) rejected = true;
+      else limit.lastSyncAt = now;
+    } else {
+      if (limit.actions >= 5) rejected = true;
+      else limit.actions += 1;
     }
+
     if (!rejected) return true;
     limit.violations += 1;
     if (limit.violations >= 12) {
@@ -219,6 +220,7 @@ export class GameRoom {
       const byteLength = typeof message === "string" ? new TextEncoder().encode(message).byteLength : message.byteLength;
       if (byteLength > MAX_WS_MESSAGE_BYTES) return socket.close(1009, "Message too large.");
       const now = Date.now();
+      if (!this.allowSocketMessage(socket, player.id, "raw", now)) return;
       let action: ClientAction;
       try {
         action = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message)) as ClientAction;
@@ -227,7 +229,7 @@ export class GameRoom {
         return this.sendError(socket, "Invalid action.");
       }
       const isSync = action.type === "sync";
-      if (!this.allowSocketMessage(socket, player.id, isSync, now)) return;
+      if (!this.allowSocketMessage(socket, player.id, isSync ? "sync" : "action", now)) return;
 
       const dailyChanged = this.applyDailyAp(game, now);
       if (dailyChanged) {
