@@ -96,6 +96,8 @@ export default function App() {
   const [recoveryInput, setRecoveryInput] = useState("");
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [sharedMatchStatus, setSharedMatchStatus] = useState<{phase:"lobby"|"active"|"ended"|null;playerCount:number}>({phase:null,playerCount:0});
+  const [resettingMatch, setResettingMatch] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const notesDirtyRef = useRef(false);
   const notesDraftRef = useRef("");
@@ -104,6 +106,23 @@ export default function App() {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (session) return;
+    let stopped = false;
+    const refreshStatus = async () => {
+      try {
+        const status = await api("/api/game/status");
+        if (!stopped) setSharedMatchStatus({
+          phase: status.phase === "lobby" || status.phase === "active" || status.phase === "ended" ? status.phase : null,
+          playerCount: Number(status.playerCount) || 0,
+        });
+      } catch { /* Joining will surface API errors if the server is unavailable. */ }
+    };
+    void refreshStatus();
+    const interval = window.setInterval(() => { void refreshStatus(); }, 10000);
+    return () => { stopped = true; window.clearInterval(interval); };
+  }, [session]);
 
   useEffect(() => {
     if(!replayEvents.length)return;
@@ -178,10 +197,12 @@ export default function App() {
       };
       socket.onclose = (event) => {
         if (stopped) return;
-        if (event.code === 1008 && event.reason === "Kicked by host.") {
+        if (event.code === 1008 && (event.reason === "Kicked by host." || event.reason === "Shared match reset.")) {
           sessionStorage.removeItem(SESSION_KEY);
           localStorage.removeItem("tank-turn-tactics-labels-" + session.playerId);
-          setError("The host removed this player from the match.");
+          setError(event.reason === "Shared match reset."
+            ? "The shared match was reset. Join to create or enter the new lobby."
+            : "The host removed this player from the match.");
           setSession(null);
           setConnection("offline");
           return;
@@ -215,6 +236,20 @@ export default function App() {
       setSession(next);setRecoveryOpen(true);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not enter the lobby."); }
     finally { setBusy(false); }
+  };
+  const resetSharedMatch = async () => {
+    if (!window.confirm("Reset the shared match for everyone? All players, match progress, private notes, and recovery keys for this match will be cleared.")) return;
+    setResettingMatch(true);
+    setError("");
+    try {
+      await api("/api/game/reset", {});
+      setSharedMatchStatus({phase:null,playerCount:0});
+      setError("Shared match reset. Join the game to create a fresh lobby.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not reset the shared match.");
+    } finally {
+      setResettingMatch(false);
+    }
   };
   const restoreSession = async () => {
     setBusy(true); setError("");
@@ -335,6 +370,11 @@ export default function App() {
           {busy ? "Connecting…" : mode === "join" ? "Join shared game" : "Restore player"}<ChevronRight size={18}/>
         </button>
         <div className="card-foot"><KeyRound size={14}/> Keep your recovery key private. It restores this player from another browser.</div>
+        {sharedMatchStatus.phase && <div className="reset-match-option">
+          <div className="eyebrow">CURRENT SHARED MATCH</div>
+          <p>The shared match is {sharedMatchStatus.phase} with {sharedMatchStatus.playerCount} player{sharedMatchStatus.playerCount === 1 ? "" : "s"}. Resetting removes everyone and invalidates all recovery keys from this match.</p>
+          <button className="danger-button" disabled={busy || resettingMatch} onClick={resetSharedMatch}><RefreshCw size={14}/>{resettingMatch ? "Resetting…" : "Reset shared match"}</button>
+        </div>}
       </section>
     </main><footer className="landing-foot">16 × 16 TO 32 × 32 MAPS <span>•</span> UP TO {MAX_PLAYERS} PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
   </div>;
