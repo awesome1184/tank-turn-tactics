@@ -4,7 +4,64 @@ import {
 } from "../../../packages/shared/src/contracts";
 import type { ClientAction, GameState, MatchEvent, Player, PublicEventLogEntry, PublicGameState, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
 
-export interface Env { ROOMS: DurableObjectNamespace; }
+export interface Env { ROOMS: DurableObjectNamespace; TURNSTILE_SECRET_KEY?: string; }
+class RequestError extends Error {
+  constructor(message: string, readonly status: number) { super(message); }
+}
+const MAX_HTTP_BODY_BYTES = 32 * 1024;
+const MAX_WS_MESSAGE_BYTES = 24 * 1024;
+const ALLOWED_WS_ORIGINS = new Set([
+  "https://awesome1184.github.io",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+]);
+async function readJsonBody<T>(request: Request): Promise<T> {
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_HTTP_BODY_BYTES) {
+    throw new RequestError("Request body is too large.", 413);
+  }
+  if (!request.body) throw new RequestError("A JSON request body is required.", 400);
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let source = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_HTTP_BODY_BYTES) {
+        await reader.cancel();
+        throw new RequestError("Request body is too large.", 413);
+      }
+      source += decoder.decode(value, { stream: true });
+    }
+    source += decoder.decode();
+    return JSON.parse(source) as T;
+  } catch (error) {
+    if (error instanceof RequestError) throw error;
+    throw new RequestError("Invalid JSON request body.", 400);
+  } finally {
+    reader.releaseLock();
+  }
+}
+async function verifyTurnstile(secret: string, token: string, ip: string): Promise<boolean> {
+  if (!token || token.length > 4096) return false;
+  const form = new FormData();
+  form.set("secret", secret);
+  form.set("response", token);
+  if (ip && ip !== "unknown") form.set("remoteip", ip);
+  try {
+    const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST", body: form,
+    });
+    if (!response.ok) return false;
+    const result = await response.json() as { success?: boolean };
+    return result.success === true;
+  } catch {
+    return false;
+  }
+}
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
 });
@@ -33,20 +90,35 @@ export default {
     try {
       const stub = stubFor(env);
       if (url.pathname === "/api/game/reset" && request.method === "POST") {
-        const body = await request.json() as { playerId?: unknown; token?: unknown };
+        const body = await readJsonBody<{ playerId?: unknown; token?: unknown }>(request);
         return cors(await stub.fetch("https://game.internal/reset", {
           method: "POST", body: JSON.stringify(body),
         }));
       }
       if (url.pathname === "/api/game/join" && request.method === "POST") {
-        const body = await request.json() as { name?: unknown };
+        const body = await readJsonBody<{ name?: unknown; turnstileToken?: unknown }>(request);
+        const ip = request.headers.get("cf-connecting-ip") || "unknown";
+        if (env.TURNSTILE_SECRET_KEY) {
+          const challenge = typeof body.turnstileToken === "string" ? body.turnstileToken : "";
+          if (!(await verifyTurnstile(env.TURNSTILE_SECRET_KEY, challenge, ip))) {
+            return cors(json({ error: "Complete the anti-bot check and try again." }, 403));
+          }
+        }
         return cors(await stub.fetch("https://game.internal/join", {
-          method: "POST", body: JSON.stringify({ name: cleanName(body.name) }),
+          method: "POST",
+          headers: { "content-type": "application/json", "x-client-ip": ip },
+          body: JSON.stringify({ name: cleanName(body.name) }),
         }));
       }
       if (url.pathname === "/api/game/recover" && request.method === "POST") {
-        const body = await request.json() as { playerId?: unknown; token?: unknown };
+        const body = await readJsonBody<{ playerId?: unknown; token?: unknown }>(request);
         return cors(await stub.fetch("https://game.internal/recover", {
+          method: "POST", body: JSON.stringify(body),
+        }));
+      }
+      if (url.pathname === "/api/game/ws-ticket" && request.method === "POST") {
+        const body = await readJsonBody<{ playerId?: unknown; token?: unknown }>(request);
+        return cors(await stub.fetch("https://game.internal/ticket", {
           method: "POST", body: JSON.stringify(body),
         }));
       }
@@ -54,12 +126,13 @@ export default {
         return stub.fetch(new Request("https://game.internal/ws" + url.search, request));
       }
       if (url.pathname === "/api/game/notes" && request.method === "POST") {
-        const body = await request.json() as { playerId?: string; token?: string };
+        const body = await readJsonBody<{ playerId?: string; token?: string }>(request);
         return cors(await stub.fetch("https://game.internal/notes", {method:"POST",body:JSON.stringify(body)}));
       }
       return cors(json({ error: "Not found." }, 404));
     } catch (error) {
-      return cors(json({ error: error instanceof Error ? error.message : "Unexpected server error." }, 400));
+      const status = error instanceof RequestError ? error.status : 400;
+      return cors(json({ error: error instanceof Error ? error.message : "Unexpected server error." }, status));
     }
   },
 };
@@ -69,6 +142,8 @@ export class GameRoom {
   constructor(state: DurableObjectState, _env: Env) { this.state = state; }
 
   private queue: Promise<void> = Promise.resolve();
+  private messageLimits = new Map<string, { windowStart: number; total: number; actions: number; lastSyncAt: number; violationStart: number; violations: number }>();
+  private joinAttempts = new Map<string, number[]>();
 
   private exclusive<T>(task: () => Promise<T>): Promise<T> {
     const next = this.queue.then(task, task);
@@ -85,6 +160,7 @@ export class GameRoom {
     const path=routeUrl.pathname;
     if (path === "/ws") return this.connect(request);
     if (path === "/reset" && request.method === "POST") return this.reset(request);
+    if (path === "/ticket" && request.method === "POST") return this.issueSocketTicket(request);
     if (path === "/join" && request.method === "POST") return this.join(request);
     if (path === "/recover" && request.method === "POST") return this.recover(request);
     if (path === "/notes" && request.method === "POST") return this.notesArchive(request);
@@ -95,6 +171,43 @@ export class GameRoom {
     await this.exclusive(() => this.handleSocketMessage(socket, message));
   }
 
+  private allowSocketMessage(socket: WebSocket, playerId: string, isSync: boolean, now: number): boolean {
+    let limit = this.messageLimits.get(playerId);
+    if (!limit) {
+      limit = { windowStart: now, total: 0, actions: 0, lastSyncAt: 0, violationStart: now, violations: 0 };
+      this.messageLimits.set(playerId, limit);
+    }
+    if (now - limit.windowStart >= 1000) {
+      limit.windowStart = now;
+      limit.total = 0;
+      limit.actions = 0;
+    }
+    if (now - limit.violationStart >= 10000) {
+      limit.violationStart = now;
+      limit.violations = 0;
+    }
+    let rejected = false;
+    if (limit.total >= 20) rejected = true;
+    else {
+      limit.total += 1;
+      if (isSync) {
+        if (now - limit.lastSyncAt < 2000) rejected = true;
+        else limit.lastSyncAt = now;
+      } else {
+        if (limit.actions >= 5) rejected = true;
+        else limit.actions += 1;
+      }
+    }
+    if (!rejected) return true;
+    limit.violations += 1;
+    if (limit.violations >= 12) {
+      try { socket.close(1013, "Rate limit exceeded."); } catch { /* closed socket */ }
+    } else {
+      this.sendError(socket, "You're sending messages too quickly. Please slow down.");
+    }
+    return false;
+  }
+
   private async handleSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     try {
       const session = socket.deserializeAttachment() as { playerId: string; token: string } | null;
@@ -103,13 +216,35 @@ export class GameRoom {
       if (!game) return socket.close(1008, "Lobby not found");
       const player = game.players.find((p) => p.id === session.playerId && p.token === session.token);
       if (!player) return socket.close(1008, "Invalid session");
+      const byteLength = typeof message === "string" ? new TextEncoder().encode(message).byteLength : message.byteLength;
+      if (byteLength > MAX_WS_MESSAGE_BYTES) return socket.close(1009, "Message too large.");
+      const now = Date.now();
       let action: ClientAction;
       try {
         action = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message)) as ClientAction;
       } catch { return this.sendError(socket, "Invalid message format."); }
-      const now = Date.now();
-      this.applyDailyAp(game, now);
-      if (action.type !== "sync") this.applyAction(game, player, action, now);
+      if (!action || typeof action !== "object" || typeof action.type !== "string") {
+        return this.sendError(socket, "Invalid action.");
+      }
+      const isSync = action.type === "sync";
+      if (!this.allowSocketMessage(socket, player.id, isSync, now)) return;
+
+      const dailyChanged = this.applyDailyAp(game, now);
+      if (dailyChanged) {
+        game.updatedAt = now;
+        this.updateOnlineCursors(game);
+        await this.save(game);
+      }
+      if (isSync) {
+        if (dailyChanged) this.broadcast(game);
+        else {
+          try { socket.send(JSON.stringify({ type: "state", state: this.publicState(game, player) })); }
+          catch { /* closed socket */ }
+        }
+        return;
+      }
+
+      this.applyAction(game, player, action, now);
       game.updatedAt = now;
       this.updateOnlineCursors(game);
       await this.save(game);
@@ -144,6 +279,32 @@ export class GameRoom {
 
   async webSocketError(socket: WebSocket): Promise<void> { await this.webSocketClose(socket); }
 
+  private async issueSocketTicket(request: Request): Promise<Response> {
+    const body = await request.json() as { playerId?: unknown; token?: unknown };
+    if (typeof body.playerId !== "string" || typeof body.token !== "string") {
+      return json({ error: "That recovery key does not match a saved player." }, 400);
+    }
+    const game = await this.getGame();
+    const player = game?.players.find(p => p.id === body.playerId && p.token === body.token);
+    if (!game || !player) return json({ error: "That recovery key does not match a saved player." }, 403);
+
+    const now = Date.now();
+    const tickets = game.webSocketTickets || {};
+    for (const [key, ticket] of Object.entries(tickets)) {
+      if (ticket.expiresAt <= now || !game.players.some(candidate => candidate.id === ticket.playerId)) delete tickets[key];
+    }
+    const activeTickets = Object.entries(tickets);
+    if (activeTickets.length >= 128) {
+      activeTickets.sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+      for (const [key] of activeTickets.slice(0, activeTickets.length - 127)) delete tickets[key];
+    }
+    const ticket = makeToken();
+    tickets[ticket] = { playerId: player.id, expiresAt: now + 60_000 };
+    game.webSocketTickets = tickets;
+    await this.save(game);
+    return json({ ticket, expiresAt: now + 60_000 });
+  }
+
   // Only the host may clear a completed match. Requiring the player's private
   // session token prevents unauthenticated visitors from resetting everyone.
   private async reset(request: Request): Promise<Response> {
@@ -175,6 +336,7 @@ export class GameRoom {
       if (game.endReason === undefined) game.endReason=null;
       if (!game.events) game.events=[];
       if (!game.nextEventId) game.nextEventId=game.events.reduce((max,event)=>Math.max(max,event.id),0)+1;
+      if (!game.webSocketTickets) game.webSocketTickets = {};
       for (const [index,player] of game.players.entries()) {
         if (!player.color) player.color=playerColor(index);
         if (player.notes===undefined) player.notes="";
@@ -321,6 +483,15 @@ export class GameRoom {
   private async join(request: Request): Promise<Response> {
     const body = await request.json() as { name: string };
     const now = Date.now();
+    const ip = (request.headers.get("x-client-ip") || "unknown").slice(0, 64);
+    const attempts = (this.joinAttempts.get(ip) || []).filter(at => now - at < 60_000);
+    if (attempts.length >= 30) return json({ error: "Too many players have joined from this network. Please try again in a minute." }, 429);
+    attempts.push(now);
+    this.joinAttempts.set(ip, attempts);
+    if (this.joinAttempts.size > 1024) {
+      for (const [key, times] of this.joinAttempts) if (!times.length || now - times[times.length - 1] > 60_000) this.joinAttempts.delete(key);
+      while (this.joinAttempts.size > 1024) this.joinAttempts.delete(this.joinAttempts.keys().next().value as string);
+    }
     let game = await this.getGame();
 
     // The first tab to join creates the shared lobby and becomes its host.
@@ -372,13 +543,35 @@ export class GameRoom {
 
   private async connect(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const playerId = url.searchParams.get("playerId") || "";
-    const token = url.searchParams.get("token") || "";
+    const origin = request.headers.get("Origin") || "";
+    if (!ALLOWED_WS_ORIGINS.has(origin)) return new Response("Origin not allowed", { status: 403 });
+    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("Expected WebSocket", { status: 426 });
+    const ticketKey = url.searchParams.get("ticket") || "";
     const game = await this.getGame();
     if (!game) return new Response("Lobby not found", { status: 404 });
-    const player = game.players.find((p) => p.id === playerId && p.token === token);
-    if (!player) return new Response("Invalid player session", { status: 403 });
-    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("Expected WebSocket", { status: 426 });
+    const ticket = game.webSocketTickets?.[ticketKey];
+    if (!ticket || ticket.expiresAt <= Date.now()) {
+      if (ticket && game.webSocketTickets) {
+        delete game.webSocketTickets[ticketKey];
+        await this.save(game);
+      }
+      return new Response("Connection ticket is invalid or expired", { status: 403 });
+    }
+    const player = game.players.find((p) => p.id === ticket.playerId);
+    delete game.webSocketTickets![ticketKey];
+    if (!player) {
+      await this.save(game);
+      return new Response("Player session no longer exists", { status: 403 });
+    }
+    const activeConnections = this.state.getWebSockets().filter(candidate => {
+      if (candidate.readyState !== WebSocket.OPEN) return false;
+      const attachment = candidate.deserializeAttachment() as { playerId?: string } | null;
+      return attachment?.playerId === player.id;
+    }).length;
+    if (activeConnections >= 3) {
+      await this.save(game);
+      return new Response("Too many connections for this player", { status: 429 });
+    }
     this.applyDailyAp(game,Date.now());
     const wasOnline=player.online;
     if(!wasOnline){
@@ -391,7 +584,7 @@ export class GameRoom {
     }
     const pair = new WebSocketPair(), client = pair[0], server = pair[1];
     this.state.acceptWebSocket(server, [player.id]);
-    server.serializeAttachment({ playerId, token });
+    server.serializeAttachment({ playerId: player.id, token: player.token });
     player.online = true;
     player.lastSeenEventId=player.replayEvents.length?player.lastSeenEventId:(game.nextEventId||1)-1;
     this.updateOnlineCursors(game);
@@ -401,12 +594,14 @@ export class GameRoom {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private applyDailyAp(game: GameState, now: number): void {
-    if (game.phase !== "active") return;
+  private applyDailyAp(game: GameState, now: number): boolean {
+    if (game.phase !== "active") return false;
+    let changed = false;
 
     // The jury ballot closes on the same 24-hour boundary as daily AP income.
     if (game.juryCycleEndsAt == null && game.startedAt !== null) {
       game.juryCycleEndsAt = game.startedAt + DAILY_AP_INTERVAL_MS;
+      changed = true;
     }
     if (game.juryCycleEndsAt !== null && now >= game.juryCycleEndsAt) {
       const votesByTarget = new Map<string, number>();
@@ -426,6 +621,7 @@ export class GameRoom {
       const elapsedCycles = Math.floor((now - game.juryCycleEndsAt) / DAILY_AP_INTERVAL_MS) + 1;
       game.juryCycleEndsAt += elapsedCycles * DAILY_AP_INTERVAL_MS;
       game.juryVotes = {};
+      changed = true;
     }
 
     for (const player of game.players) {
@@ -435,7 +631,9 @@ export class GameRoom {
       player.ap += earned;
       player.nextApAt += earned * DAILY_AP_INTERVAL_MS;
       this.recordEvent(game,"daily-ap",player,undefined,{amount:earned,at:firstDueAt});
+      changed = true;
     }
+    return changed;
   }
 
   private applyAction(game: GameState, actor: Player, action: ClientAction, now: number): void {
@@ -449,7 +647,7 @@ export class GameRoom {
     }
     if (action.type === "kick") {
       if (!actor.host) throw new Error("Only the host can remove players.");
-      if (game.phase === "ended") throw new Error("Players cannot be removed after the match ends.");
+      if (game.phase !== "lobby") throw new Error("Players can only be removed before the match starts.");
       if (typeof action.targetId !== "string" || action.targetId === actor.id) throw new Error("Choose another player to remove.");
       const targetIndex=game.players.findIndex(player=>player.id===action.targetId);
       if(targetIndex<0)throw new Error("That player is no longer in the match.");
@@ -459,11 +657,6 @@ export class GameRoom {
       delete game.juryVotes[target.id];
       for(const vote of Object.values(game.juryVotes))if(vote.targetId===target.id)vote.invalidated=true;
       game.notesHistory=game.notesHistory.filter(entry=>entry.playerId!==target.id);
-      if(game.phase==="active"){
-        const alive=game.players.filter(player=>player.alive);
-        if(alive.length===1){game.phase="ended";game.winnerId=alive[0].id;game.endReason="last-player-standing";this.recordEvent(game,"match-end",null,alive[0]);}
-        else if(alive.length===0){game.phase="ended";game.winnerId=null;game.endReason="no-survivors";}
-      }
       return;
     }
     if (action.type === "setColor") {

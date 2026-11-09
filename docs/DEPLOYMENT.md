@@ -93,15 +93,30 @@ This is a public URL, not a secret; the web client needs it at build time.
 
 Then open **Actions → Deploy web client → Run workflow** and run it on `main`. This rebuilds the browser client with the Worker URL embedded. Refresh the game page after the Pages deployment succeeds.
 
-## 7. Multi-tab playtesting
+## 7. Multiple players
 
-Open the GitHub Pages URL in each tab. The first player to join creates the shared lobby and becomes host. Each tab stores its own player session in sessionStorage, so it can reload without switching to another tab's player. The top-bar New player tab control opens another tab for a new player.
+Share the GitHub Pages URL with players. The first player to join creates the shared lobby and becomes host. Each browser session stores its own player session in sessionStorage and can reload without losing the player account.
 
 Join all test players before starting the match. New players cannot join after the match starts. When a match ends, the host can reset it; this returns the existing roster to the lobby with HP, AP, range, positions, and jury state reset, while keeping each tab's player identity and recovery key.
 
 There is only one game at a time. No lobby codes, separate rooms, or chat are used.
 
-## 8. Free plan and capacity notes
+## 8. Abuse protection and Turnstile
+
+The Worker now rate-limits lobby joins by Cloudflare's edge IP, limits WebSocket connections and message rates, rejects oversized request/message bodies, and issues 60-second single-use WebSocket tickets instead of putting permanent recovery tokens in URLs.
+
+To enable the interactive bot challenge for new player creation:
+
+1. In Cloudflare, create a Turnstile widget for `awesome1184.github.io` (add `localhost` and `127.0.0.1` only if you need local development).
+2. Add the widget's **site key** as the GitHub Actions repository variable `VITE_TURNSTILE_SITE_KEY`.
+3. Add the widget's **secret key** to the Worker with `npx wrangler secret put TURNSTILE_SECRET_KEY` from `apps/worker`, or add the same secret in the Cloudflare Worker settings.
+4. Redeploy the web client and Worker.
+
+The server verifies each Turnstile response with Cloudflare. When the Worker secret is configured, joins without a valid challenge are rejected. Until the secret is configured, the join IP rate limit remains active but the CAPTCHA is not enforced.
+
+Turnstile reduces automated account creation but does not prove one account equals one human. The jury still counts distinct player accounts; preventing a determined person from using multiple accounts requires authenticated identities or another trusted identity provider.
+
+## 9. Free plan and capacity notes
 
 The Worker is configured to use SQLite-backed Durable Objects, which Cloudflare supports on Workers Free and Paid plans. Current Free-plan Durable Object allowances include 100,000 requests and 13,000 GB-seconds of compute duration per day; incoming WebSocket messages use a 20:1 request-billing ratio, while outgoing WebSocket messages are not billed as requests. Limits reset daily, and operations of a type can fail after that type's free allowance is exceeded. Keep an eye on usage during larger playtests.
 

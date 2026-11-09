@@ -141,3 +141,5 @@
 .reset-match-panel h2{font-size:18px;margin:8px 0}
 .reset-match-panel p{margin:7px 0 0;color:#a9b8c2;font-size:11px;line-height:1.6}
 .reset-match-panel .danger-button{width:100%;justify-content:center;margin-top:12px}
+
+.turnstile-wrap{display:flex;justify-content:center;margin:14px 0 8px;min-height:66px}

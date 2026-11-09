@@ -4,7 +4,22 @@ import { MAP_SIZES, MAX_PLAYERS } from "../../../packages/shared/src/contracts";
 import type { NoteHistoryEntry, PlayerLabel, PublicGameState, PublicPlayer, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
 
 const API_BASE = (import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "https://tank-turn-tactics-api.awesome69421.workers.dev")).replace(/\/$/, "");
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
 const SESSION_KEY = "tank-turn-tactics-session-v2";
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (container: HTMLElement, options: {
+        sitekey: string; theme?: "light" | "dark" | "auto";
+        callback?: (token: string) => void;
+        "expired-callback"?: () => void;
+        "error-callback"?: () => void;
+      }) => string;
+      remove: (widgetId: string) => void;
+      reset: (widgetId?: string) => void;
+    };
+  }
+}
 type Session = { playerId: string; token: string; name: string };
 type Labels = Record<string, PlayerLabel>;
 
@@ -97,6 +112,9 @@ export default function App() {
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [resettingMatch, setResettingMatch] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState("");
+  const turnstileContainerRef = useRef<HTMLDivElement | null>(null);
+  const turnstileWidgetRef = useRef<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const notesDirtyRef = useRef(false);
   const notesDraftRef = useRef("");
@@ -105,6 +123,50 @@ export default function App() {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (session || mode !== "join" || !TURNSTILE_SITE_KEY) {
+      setTurnstileToken("");
+      return;
+    }
+    let cancelled = false;
+    let widgetId: string | null = null;
+    let pollId = 0;
+    const renderWidget = () => {
+      if (cancelled || widgetId || !turnstileContainerRef.current || !window.turnstile) return;
+      widgetId = window.turnstile.render(turnstileContainerRef.current, {
+        sitekey: TURNSTILE_SITE_KEY,
+        theme: "dark",
+        callback: token => setTurnstileToken(token),
+        "expired-callback": () => setTurnstileToken(""),
+        "error-callback": () => {
+          setTurnstileToken("");
+          setError("The anti-bot check could not load. Refresh the page and try again.");
+        },
+      });
+      turnstileWidgetRef.current = widgetId;
+      window.clearInterval(pollId);
+    };
+    let script = document.querySelector<HTMLScriptElement>("script[data-turnstile-api]");
+    if (!script) {
+      script = document.createElement("script");
+      script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      script.async = true;
+      script.defer = true;
+      script.dataset.turnstileApi = "true";
+      document.head.appendChild(script);
+    }
+    script.addEventListener("load", renderWidget);
+    pollId = window.setInterval(renderWidget, 250);
+    renderWidget();
+    return () => {
+      cancelled = true;
+      window.clearInterval(pollId);
+      script?.removeEventListener("load", renderWidget);
+      if (widgetId && window.turnstile) window.turnstile.remove(widgetId);
+      if (turnstileWidgetRef.current === widgetId) turnstileWidgetRef.current = null;
+    };
+  }, [session, mode]);
 
 
   useEffect(() => {
@@ -135,10 +197,13 @@ export default function App() {
     let stopped = false, retry = 0, retryId = 0;
     const connect = async () => {
       if (stopped) return;
-      // Validate again before every reconnect so tabs that were offline when a
-      // match ended also discard their now-invalid local session.
+      // Exchange the permanent recovery key for a short-lived, single-use
+      // WebSocket ticket. Permanent credentials never appear in request URLs.
+      let ticket: string;
       try {
-        await api("/api/game/recover", { playerId: session.playerId, token: session.token });
+        const result = await api("/api/game/ws-ticket", { playerId: session.playerId, token: session.token });
+        ticket = String(result.ticket || "");
+        if (!ticket) throw new Error("The server did not issue a connection ticket.");
       } catch (e) {
         if (stopped) return;
         const message = e instanceof Error ? e.message : "";
@@ -149,15 +214,17 @@ export default function App() {
           setSession(null);
           return;
         }
-        // If validation is temporarily unavailable, still attempt the socket;
-        // its existing reconnect behavior will handle a server outage.
+        setConnection("offline");
+        retry += 1;
+        retryId = window.setTimeout(connect, Math.min(15000, 700 * 2 ** Math.min(retry, 4)));
+        return;
       }
       if (stopped) return;
       setConnection("connecting");
       const endpoint = new URL(API_BASE);
       endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
       endpoint.pathname = "/api/game/ws";
-      endpoint.search = new URLSearchParams({ playerId: session.playerId, token: session.token }).toString();
+      endpoint.search = new URLSearchParams({ ticket }).toString();
       const socket = new WebSocket(endpoint.toString());
       socketRef.current = socket;
       socket.onopen = () => { retry = 0; setConnection("online"); setError(""); socket.send(JSON.stringify({ type: "sync" })); };
@@ -209,16 +276,19 @@ export default function App() {
   }, []);
 
   const enter = async () => {
-    if (mode === "recover" || !name.trim() || name.trim().length > 18) return;
+    if (mode === "recover" || !name.trim() || name.trim().length > 18 || (TURNSTILE_SITE_KEY && !turnstileToken)) return;
     setBusy(true); setError("");
     try {
-      const result = await api("/api/game/join", { name: name.trim() });
+      const result = await api("/api/game/join", { name: name.trim(), turnstileToken });
       const next: Session = { playerId: result.playerId, token: result.token, name: result.name || name.trim() };
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
       notesDirtyRef.current=false;notesDraftRef.current="";setNotesDraft("");setNotesArchive(null);setReplayEvents([]);setReplayIndex(0);
-      setSession(next);setRecoveryOpen(true);
-    } catch (e) { setError(e instanceof Error ? e.message : "Could not enter the lobby."); }
-    finally { setBusy(false); }
+      setSession(next);setRecoveryOpen(true);setTurnstileToken("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not enter the lobby.");
+      if (turnstileWidgetRef.current && window.turnstile) window.turnstile.reset(turnstileWidgetRef.current);
+      setTurnstileToken("");
+    } finally { setBusy(false); }
   };
   const resetSharedMatch = async () => {
     if (!session || !window.confirm("Reset the completed match? This removes every player, match record, private note, and recovery key. Everyone will need to join again.")) return;
@@ -315,7 +385,7 @@ export default function App() {
     setSelectedMove(null);setMoveConfirmationOpen(false);
   };
   const kickPlayer=(player:PublicPlayer)=>{
-    if(!me?.host||player.id===me.id||game?.phase==="ended")return;
+    if(!me?.host||player.id===me.id||game?.phase!=="lobby")return;
     if(!window.confirm("Remove "+player.name+" from this match? Their current player account and recovery key will stop working."))return;
     send({type:"kick",targetId:player.id});
   };
@@ -344,8 +414,9 @@ export default function App() {
         ) : (
           <label>PLAYER NAME<input value={name} maxLength={18} placeholder="Choose a callsign" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && enter()}/></label>
         )}
+        {mode === "join" && TURNSTILE_SITE_KEY && <div className="turnstile-wrap"><div ref={turnstileContainerRef}/></div>}
         {error && <div className="error">{error}</div>}
-        <button className="primary-button" disabled={busy || (mode === "recover" ? !recoveryInput.trim() : !name.trim())} onClick={mode === "recover" ? restoreSession : enter}>
+        <button className="primary-button" disabled={busy || (mode === "recover" ? !recoveryInput.trim() : !name.trim() || (!!TURNSTILE_SITE_KEY && !turnstileToken))} onClick={mode === "recover" ? restoreSession : enter}>
           {busy ? "Connecting…" : mode === "join" ? "Join shared game" : "Restore player"}<ChevronRight size={18}/>
         </button>
         <div className="card-foot"><KeyRound size={14}/> Keep your recovery key private. It restores this player from another browser.</div>
@@ -445,7 +516,7 @@ export default function App() {
             <small className="notes-count">{notesDraft.length}/5000 characters</small>
           </section>
           <section className="panel roster-panel"><div className="section-title"><div><div className="eyebrow">FIELD INTELLIGENCE</div><h2>Players</h2></div><small>{game.players.filter(p => p.alive).length} alive</small></div>
-            {game.players.map(p => <div className={"field-row " + (p.id === selectedId ? "focused" : "")} key={p.id}><button className="field-person" onClick={() => setSelectedId(p.id)}><i title={labels[p.id]==="ally"?"Ally":labels[p.id]==="enemy"?"Enemy":"Unmarked"} className={"player-label-dot "+(labels[p.id]||"unmarked")}/><span><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.alive ? p.hp + " HP" : "Eliminated"}</small></span></button><select aria-label={"Label " + p.name} value={labels[p.id] || "unmarked"} onChange={e => updateLabel(p.id, e.target.value as PlayerLabel)}><option value="unmarked">Unmarked</option><option value="ally">Ally</option><option value="enemy">Enemy</option></select>{me?.host&&p.id!==me.id&&game.phase!=="ended"&&<button className="kick-button" onClick={()=>kickPlayer(p)} title={"Remove "+p.name}><UserX size={13}/> Kick</button>}</div>)}
+            {game.players.map(p => <div className={"field-row " + (p.id === selectedId ? "focused" : "")} key={p.id}><button className="field-person" onClick={() => setSelectedId(p.id)}><i title={labels[p.id]==="ally"?"Ally":labels[p.id]==="enemy"?"Enemy":"Unmarked"} className={"player-label-dot "+(labels[p.id]||"unmarked")}/><span><b>{p.name}{p.id === session.playerId ? " · YOU" : ""}</b><small>{p.alive ? p.hp + " HP" : "Eliminated"}</small></span></button><select aria-label={"Label " + p.name} value={labels[p.id] || "unmarked"} onChange={e => updateLabel(p.id, e.target.value as PlayerLabel)}><option value="unmarked">Unmarked</option><option value="ally">Ally</option><option value="enemy">Enemy</option></select>{me?.host&&p.id!==me.id&&game.phase==="lobby"&&<button className="kick-button" onClick={()=>kickPlayer(p)} title={"Remove "+p.name}><UserX size={13}/> Kick</button>}</div>)}
             <p className="micro-note">Green dots mark allies and red dots mark enemies. Labels are private to this browser and do not change damage.</p>
           </section>
           <section className="panel event-log-panel"><div className="section-title"><div><div className="eyebrow">MATCH HISTORY</div><h2>Public event log</h2></div><small>{game.eventLog.length} events</small></div>
