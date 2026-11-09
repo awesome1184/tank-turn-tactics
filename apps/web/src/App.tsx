@@ -96,7 +96,6 @@ export default function App() {
   const [recoveryInput, setRecoveryInput] = useState("");
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [now, setNow] = useState(Date.now());
-  const [sharedMatchStatus, setSharedMatchStatus] = useState<{phase:"lobby"|"active"|"ended"|null;playerCount:number}>({phase:null,playerCount:0});
   const [resettingMatch, setResettingMatch] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const notesDirtyRef = useRef(false);
@@ -107,22 +106,6 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  useEffect(() => {
-    if (session) return;
-    let stopped = false;
-    const refreshStatus = async () => {
-      try {
-        const status = await api("/api/game/status");
-        if (!stopped) setSharedMatchStatus({
-          phase: status.phase === "lobby" || status.phase === "active" || status.phase === "ended" ? status.phase : null,
-          playerCount: Number(status.playerCount) || 0,
-        });
-      } catch { /* Joining will surface API errors if the server is unavailable. */ }
-    };
-    void refreshStatus();
-    const interval = window.setInterval(() => { void refreshStatus(); }, 10000);
-    return () => { stopped = true; window.clearInterval(interval); };
-  }, [session]);
 
   useEffect(() => {
     if(!replayEvents.length)return;
@@ -201,7 +184,7 @@ export default function App() {
           sessionStorage.removeItem(SESSION_KEY);
           localStorage.removeItem("tank-turn-tactics-labels-" + session.playerId);
           setError(event.reason === "Shared match reset."
-            ? "The shared match was reset. Join to create or enter the new lobby."
+            ? "The host reset the completed match. Join again to start a new one."
             : "The host removed this player from the match.");
           setSession(null);
           setConnection("offline");
@@ -238,13 +221,12 @@ export default function App() {
     finally { setBusy(false); }
   };
   const resetSharedMatch = async () => {
-    if (!window.confirm("Reset the shared match for everyone? All players, match progress, private notes, and recovery keys for this match will be cleared.")) return;
+    if (!session || !window.confirm("Reset the completed match? This removes every player, match record, private note, and recovery key. Everyone will need to join again.")) return;
     setResettingMatch(true);
     setError("");
     try {
-      await api("/api/game/reset", {});
-      setSharedMatchStatus({phase:null,playerCount:0});
-      setError("Shared match reset. Join the game to create a fresh lobby.");
+      await api("/api/game/reset", { playerId: session.playerId, token: session.token });
+      setError("Reset accepted. The old match is closing for everyone.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not reset the shared match.");
     } finally {
@@ -263,10 +245,7 @@ export default function App() {
     } catch (e) { setError(e instanceof Error ? e.message : "Could not restore this player."); }
     finally { setBusy(false); }
   };
-  const leave = () => {
-    socketRef.current?.close(); sessionStorage.removeItem(SESSION_KEY);
-    setSession(null); setGame(null); setError(""); setRecoveryOpen(false);
-  };
+
   const recoveryKey = session ? makeRecoveryKey(session) : "";
   const downloadRecoveryKey = () => {
     if (!session) return;
@@ -370,17 +349,13 @@ export default function App() {
           {busy ? "Connecting…" : mode === "join" ? "Join shared game" : "Restore player"}<ChevronRight size={18}/>
         </button>
         <div className="card-foot"><KeyRound size={14}/> Keep your recovery key private. It restores this player from another browser.</div>
-        {sharedMatchStatus.phase && <div className="reset-match-option">
-          <div className="eyebrow">CURRENT SHARED MATCH</div>
-          <p>The shared match is {sharedMatchStatus.phase} with {sharedMatchStatus.playerCount} player{sharedMatchStatus.playerCount === 1 ? "" : "s"}. Resetting removes everyone and invalidates all recovery keys from this match.</p>
-          <button className="danger-button" disabled={busy || resettingMatch} onClick={resetSharedMatch}><RefreshCw size={14}/>{resettingMatch ? "Resetting…" : "Reset shared match"}</button>
-        </div>}
+
       </section>
     </main><footer className="landing-foot">16 × 16 TO 32 × 32 MAPS <span>•</span> UP TO {MAX_PLAYERS} PLAYERS <span>•</span> 1 AP EVERY 24 HOURS</footer>
   </div>;
 
   return <div className="shell">
-    <header className="topbar"><div className="brand"><div className="brand-icon"><Shield/></div><div><b>TANK TURN TACTICS</b><small>One shared game · each tab is a player</small></div></div><div className="top-right"><span className={"connection " + connection}><i/>{connection === "online" ? "Connected" : connection === "connecting" ? "Connecting" : "Reconnecting"}</span><button className="quiet-button" onClick={() => window.open(window.location.href, "_blank", "noopener,noreferrer")}><Users size={14}/> New player tab</button><button className="quiet-button" onClick={() => setRecoveryOpen(!recoveryOpen)}><KeyRound size={14}/> Save key</button><button className="quiet-button" onClick={leave}>Switch player</button></div></header>
+    <header className="topbar"><div className="brand"><div className="brand-icon"><Shield/></div><div><b>TANK TURN TACTICS</b><small>One shared match · persistent player accounts</small></div></div><div className="top-right"><span className={"connection " + connection}><i/>{connection === "online" ? "Connected" : connection === "connecting" ? "Connecting" : "Reconnecting"}</span><button className="quiet-button" onClick={() => setRecoveryOpen(!recoveryOpen)}><KeyRound size={14}/> Save key</button></div></header>
     {recoveryOpen && <section className="panel utility-panel recovery-panel">
       <div className="section-title"><div><div className="eyebrow">PLAYER BACKUP</div><h2>Recovery key</h2></div><button className="quiet-button" onClick={() => setRecoveryOpen(false)}>Close</button></div>
       <p>Save this private key somewhere safe. It restores this exact player and server-saved game state on another browser. Anyone holding it can take over the player.</p>
@@ -401,9 +376,9 @@ export default function App() {
         <div className="replay-footer"><small>Each event advances every 1.5 seconds.</small><button className="secondary-button" onClick={skipReplay}>Skip replay</button></div>
       </section>
     </div>}
-    {!game ? <div className="loading panel"><RefreshCw className="spin"/><h2>Connecting to the shared game</h2><p>Restoring {session.name}'s player session.</p><button className="quiet-button" onClick={leave}>Switch player</button></div> :
+    {!game ? <div className="loading panel"><RefreshCw className="spin"/><h2>Connecting to the shared game</h2><p>Restoring {session.name}'s player session.</p></div> :
     game.phase === "lobby" ? <main className="lobby-layout">
-      <section className="panel lobby-hero"><div className="eyebrow">ONE SHARED MATCH · WAITING FOR PLAYERS</div><h1>Assemble your crew.</h1><p>Open the game in another tab and join with a different callsign to add another tank. Once everyone has joined, the host starts the match.</p>
+      <section className="panel lobby-hero"><div className="eyebrow">ONE SHARED MATCH · WAITING FOR PLAYERS</div><h1>Assemble your crew.</h1><p>Invite others to join the shared lobby with their own callsigns. Once everyone has joined, the host starts the match.</p>
         <div className="lobby-meta"><span><Users size={16}/> {game.players.length} / {MAX_PLAYERS} players</span><span>{game.onlineCount} {game.onlineCount===1?"person":"people"} online</span></div>
       </section>
       <section className="panel lobby-settings">
@@ -476,6 +451,7 @@ export default function App() {
           <section className="panel event-log-panel"><div className="section-title"><div><div className="eyebrow">MATCH HISTORY</div><h2>Public event log</h2></div><small>{game.eventLog.length} events</small></div>
             <div className="event-log-list">{game.eventLog.length?game.eventLog.slice().reverse().slice(0,200).map(event=><article key={event.id}><time>{new Date(event.at).toLocaleString()}</time><p>{event.message}</p></article>):<small className="muted">No events yet.</small>}</div>
           </section>
+          {game.phase==="ended"&&me?.host&&<section className="panel reset-match-panel"><div className="eyebrow">HOST CONTROL</div><h2>Start another match</h2><p>The current match has ended. Resetting clears the completed game, all player accounts, private notes, and recovery keys. Everyone will need to join again.</p><button className="danger-button" disabled={resettingMatch || connection!=="online"} onClick={resetSharedMatch}><RefreshCw size={14}/>{resettingMatch?"Resetting…":"Reset for a new match"}</button></section>}
           {game.phase==="ended"&&me?.host&&<section className="panel notes-archive"><div className="section-title"><div><div className="eyebrow">HOST RECORD</div><h2>Private notes history</h2></div></div><p>Saved revisions from players’ private notes, visible only to the host after the match ends.</p><button className="secondary-button" onClick={loadNotesArchive} disabled={notesArchiveLoading}>{notesArchiveLoading?"Loading…":"Load notes history"}</button>{notesArchive&&<div className="notes-archive-list">{notesArchive.length?notesArchive.map(entry=><article key={entry.id}><div><b>{entry.playerName}</b><time>{new Date(entry.at).toLocaleString()}</time></div><pre>{entry.text||"(cleared notes)"}</pre></article>):<small>No notes were saved this match.</small>}</div>}</section>}
         </aside>
       </div>

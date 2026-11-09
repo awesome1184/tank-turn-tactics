@@ -32,11 +32,11 @@ export default {
     const url = new URL(request.url);
     try {
       const stub = stubFor(env);
-      if (url.pathname === "/api/game/status" && request.method === "GET") {
-        return cors(await stub.fetch("https://game.internal/status"));
-      }
       if (url.pathname === "/api/game/reset" && request.method === "POST") {
-        return cors(await stub.fetch("https://game.internal/reset", { method: "POST" }));
+        const body = await request.json() as { playerId?: unknown; token?: unknown };
+        return cors(await stub.fetch("https://game.internal/reset", {
+          method: "POST", body: JSON.stringify(body),
+        }));
       }
       if (url.pathname === "/api/game/join" && request.method === "POST") {
         const body = await request.json() as { name?: unknown };
@@ -84,8 +84,7 @@ export class GameRoom {
     const routeUrl=new URL(request.url);
     const path=routeUrl.pathname;
     if (path === "/ws") return this.connect(request);
-    if (path === "/status" && request.method === "GET") return this.status();
-    if (path === "/reset" && request.method === "POST") return this.reset();
+    if (path === "/reset" && request.method === "POST") return this.reset(request);
     if (path === "/join" && request.method === "POST") return this.join(request);
     if (path === "/recover" && request.method === "POST") return this.recover(request);
     if (path === "/notes" && request.method === "POST") return this.notesArchive(request);
@@ -145,16 +144,19 @@ export class GameRoom {
 
   async webSocketError(socket: WebSocket): Promise<void> { await this.webSocketClose(socket); }
 
-  private async status(): Promise<Response> {
+  // Only the host may clear a completed match. Requiring the player's private
+  // session token prevents unauthenticated visitors from resetting everyone.
+  private async reset(request: Request): Promise<Response> {
+    const body = await request.json() as { playerId?: unknown; token?: unknown };
+    if (typeof body.playerId !== "string" || typeof body.token !== "string") {
+      return json({ error: "A valid host session is required to reset the match." }, 400);
+    }
     const game = await this.getGame();
-    return json({ phase: game?.phase ?? null, playerCount: game?.players.length ?? 0 });
-  }
-
-  // Public by design for playtesting: anyone on the login screen can discard
-  // the current shared match and let the next player create a fresh lobby.
-  private async reset(): Promise<Response> {
-    const game = await this.getGame();
-    if (!game) return json({ success: true, reset: false });
+    if (!game) return json({ error: "There is no shared match to reset." }, 409);
+    const actor = game.players.find(player => player.id === body.playerId && player.token === body.token);
+    if (!actor) return json({ error: "That player session is not valid for this match." }, 403);
+    if (!actor.host) return json({ error: "Only the match host can reset the shared match." }, 403);
+    if (game.phase !== "ended") return json({ error: "The host can reset the match only after it ends." }, 409);
 
     await this.state.storage.delete("game");
     for (const socket of this.state.getWebSockets()) {
