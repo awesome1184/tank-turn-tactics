@@ -34,9 +34,32 @@ async function api(path: string, body?: unknown): Promise<any> {
   if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
   return data;
 }
+function parseSession(value: string | null): Session | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<Session>;
+    if (typeof parsed.playerId !== "string" || parsed.playerId.length < 8 ||
+        typeof parsed.token !== "string" || parsed.token.length < 20 ||
+        typeof parsed.name !== "string") return null;
+    return { playerId: parsed.playerId, token: parsed.token, name: parsed.name };
+  } catch {
+    return null;
+  }
+}
 function savedSession(): Session | null {
-  try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null") as Session | null; }
-  catch { return null; }
+  try {
+    const shared = parseSession(localStorage.getItem(SESSION_KEY));
+    if (shared) return shared;
+
+    // Migrate an existing tab's old tab-scoped session into shared storage.
+    const legacy = parseSession(sessionStorage.getItem(SESSION_KEY));
+    if (legacy) localStorage.setItem(SESSION_KEY, JSON.stringify(legacy));
+    return legacy;
+  } catch {
+    // Keep the legacy session usable if shared browser storage is unavailable.
+    try { return parseSession(sessionStorage.getItem(SESSION_KEY)); }
+    catch { return null; }
+  }
 }
 function makeRecoveryKey(session: Session): string {
   const payload = JSON.stringify({ version: 2, playerId: session.playerId, token: session.token });
@@ -118,6 +141,30 @@ export default function App() {
   const socketRef = useRef<WebSocket | null>(null);
   const notesDirtyRef = useRef(false);
   const notesDraftRef = useRef("");
+  const sessionRef = useRef(session);
+
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  // Keep already-open tabs on the same player session too.
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== SESSION_KEY) return;
+      const next = parseSession(event.newValue);
+      const current = sessionRef.current;
+      if (current?.playerId === next?.playerId && current?.token === next?.token) return;
+      notesDirtyRef.current = false;
+      notesDraftRef.current = "";
+      setNotesDraft("");
+      setNotesArchive(null);
+      setReplayEvents([]);
+      setReplayIndex(0);
+      setSession(next);
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
@@ -208,6 +255,7 @@ export default function App() {
         if (stopped) return;
         const message = e instanceof Error ? e.message : "";
         if (message.includes("does not match a saved player")) {
+          localStorage.removeItem(SESSION_KEY);
           sessionStorage.removeItem(SESSION_KEY);
           localStorage.removeItem("tank-turn-tactics-labels-" + session.playerId);
           setError("This player account is no longer active. It may have been removed by the host.");
@@ -248,6 +296,7 @@ export default function App() {
       socket.onclose = (event) => {
         if (stopped) return;
         if (event.code === 1008 && (event.reason === "Kicked by host." || event.reason === "Shared match reset.")) {
+          localStorage.removeItem(SESSION_KEY);
           sessionStorage.removeItem(SESSION_KEY);
           localStorage.removeItem("tank-turn-tactics-labels-" + session.playerId);
           setError(event.reason === "Shared match reset."
@@ -281,7 +330,7 @@ export default function App() {
     try {
       const result = await api("/api/game/join", { name: name.trim(), turnstileToken });
       const next: Session = { playerId: result.playerId, token: result.token, name: result.name || name.trim() };
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
+      localStorage.setItem(SESSION_KEY, JSON.stringify(next));
       notesDirtyRef.current=false;notesDraftRef.current="";setNotesDraft("");setNotesArchive(null);setReplayEvents([]);setReplayIndex(0);
       setSession(next);setRecoveryOpen(true);setTurnstileToken("");
     } catch (e) {
@@ -309,7 +358,7 @@ export default function App() {
       const recovery = readRecoveryKey(recoveryInput);
       const result = await api("/api/game/recover", { playerId: recovery.playerId, token: recovery.token });
       const next: Session = { playerId: result.playerId, token: recovery.token, name: result.name };
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
+      localStorage.setItem(SESSION_KEY, JSON.stringify(next));
       notesDirtyRef.current=false;notesDraftRef.current="";setNotesDraft("");setNotesArchive(null);setReplayEvents([]);setReplayIndex(0);
       setSession(next);setMode("join");setRecoveryInput("");setRecoveryOpen(true);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not restore this player."); }
