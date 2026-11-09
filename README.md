@@ -6,7 +6,7 @@ Persistent browser-based multiplayer tank tactics game. The React client is host
 
 - One shared match with up to 64 players.
 - Player accounts with private recovery keys.
-- 16×16, 20×20, 24×24, and 32×32 maps.
+- 10×10, 16×16, 20×20, 24×24, and 32×32 maps.
 - Host-managed lobby, map size, and player removal.
 - Public event log with timestamps, visible to every player.
 - Reconnect replay shows missed events and reconstructs the actual battlefield as moves, eliminations, and revivals occur.
