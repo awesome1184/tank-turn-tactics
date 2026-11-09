@@ -136,3 +136,5 @@
 .kick-button:hover{background:#563039;border-color:#a45a64}
 .roster-row .kick-button{margin-left:4px}
 .field-row .kick-button{flex:none}
+
+.reset-match-option{margin-top:18px;padding-top:16px;border-top:1px solid #34434f}.reset-match-option p{margin:7px 0 0;color:#a9b8c2;font-size:11px;line-height:1.6}.reset-match-option .danger-button{width:100%;justify-content:center;margin-top:12px}
