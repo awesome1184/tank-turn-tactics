@@ -73,8 +73,10 @@ const cors = (response: Response) => {
   return new Response(response.body, { status: response.status, headers });
 };
 const stubFor = (env: Env) => env.ROOMS.get(env.ROOMS.idFromName("shared-game-v1"));
-const GAME_SAVE_VERSION = 3;
+const GAME_SAVE_VERSION = 4;
 const MAX_NOTE_HISTORY_PER_PLAYER = 100;
+const NOTE_BACKUP_INTERVAL_MS = 60 * 60 * 1000;
+const NOTE_BACKUP_RETRY_MS = 5 * 60 * 1000;
 const PLAYER_COLORS=["#57a6e8","#ef7373","#65c98c","#e5b85c","#b18ae8","#4bc8c8","#ed9560","#d47bc1"];
 function playerColor(index:number):string{return PLAYER_COLORS[index%PLAYER_COLORS.length];}
 function makeToken(): string { return crypto.randomUUID() + crypto.randomUUID().replaceAll("-", ""); }
@@ -155,6 +157,34 @@ export class GameRoom {
 
   async fetch(request: Request): Promise<Response> {
     return this.exclusive(() => this.route(request));
+  }
+
+  async alarm(): Promise<void> {
+    await this.exclusive(async () => {
+      const game = await this.getGame();
+      if (!game) {
+        await this.state.storage.deleteAlarm();
+        return;
+      }
+
+      try {
+        await this.backupNotesIfChanged(game, Date.now());
+      } catch (error) {
+        console.error("Hourly private-note backup failed; retrying in five minutes.", error);
+        if (game.phase !== "ended") {
+          await this.state.storage.setAlarm(Date.now() + NOTE_BACKUP_RETRY_MS);
+        } else {
+          await this.state.storage.deleteAlarm();
+        }
+        return;
+      }
+
+      if (game.phase === "ended") {
+        await this.state.storage.deleteAlarm();
+      } else {
+        await this.state.storage.setAlarm(this.nextNoteBackupAt(Date.now()));
+      }
+    });
   }
 
   private async route(request: Request): Promise<Response> {
@@ -248,7 +278,12 @@ export class GameRoom {
         return;
       }
 
+      const wasEnded = game.phase === "ended";
       await this.applyAction(game, player, action, now);
+      if (!wasEnded && game.phase === "ended") {
+        await this.backupNotesIfChanged(game, now);
+        await this.state.storage.deleteAlarm();
+      }
       game.updatedAt = now;
       this.updateOnlineCursors(game);
       await this.save(game);
@@ -357,6 +392,7 @@ export class GameRoom {
     // Keep WebSockets open and broadcast the lobby state to everyone. Offline
     // players will also return to this lobby when they reconnect with the same key.
     await this.save(game);
+    await this.ensureNotesBackupAlarm();
     this.broadcast(game);
     return json({ success: true, reset: true, playerCount: game.players.length });
   }
@@ -428,10 +464,19 @@ export class GameRoom {
 
       // Persist once so existing saves are upgraded automatically on first read.
       if (migrated) await this.save(game);
+      if (game.phase !== "ended") await this.ensureNotesBackupAlarm();
     }
     return game;
   }
   private async save(game: GameState): Promise<void> { await this.state.storage.put("game", game); }
+  private nextNoteBackupAt(now:number):number {
+    return (Math.floor(now / NOTE_BACKUP_INTERVAL_MS) + 1) * NOTE_BACKUP_INTERVAL_MS;
+  }
+  private async ensureNotesBackupAlarm():Promise<void> {
+    if (await this.state.storage.getAlarm() === null) {
+      await this.state.storage.setAlarm(this.nextNoteBackupAt(Date.now()));
+    }
+  }
   private sendError(socket: WebSocket, message: string): void {
     try { socket.send(JSON.stringify({ type: "error", message })); } catch { /* closed socket */ }
   }
@@ -554,6 +599,28 @@ export class GameRoom {
   }
 
   private noteHistoryKey(playerId:string):string{return `notes-history:${playerId}`;}
+
+  private async backupNotesIfChanged(game:GameState,at:number):Promise<void> {
+    for (const player of game.players) {
+      const key=this.noteHistoryKey(player.id);
+      const history=await this.state.storage.get<NoteHistoryEntry[]>(key)||[];
+      const text=player.notes||"";
+      const latest=history[history.length-1];
+      if (latest?.text===text || (!latest && text.length===0)) continue;
+
+      history.push({
+        id:crypto.randomUUID(),
+        playerId:player.id,
+        playerName:player.name,
+        text,
+        at,
+      });
+      if(history.length>MAX_NOTE_HISTORY_PER_PLAYER) {
+        history.splice(0,history.length-MAX_NOTE_HISTORY_PER_PLAYER);
+      }
+      await this.state.storage.put(key,history);
+    }
+  }
 
   private async notesArchive(request:Request):Promise<Response>{
     const body=await request.json() as {playerId?:unknown;token?:unknown};
@@ -773,14 +840,7 @@ export class GameRoom {
       if(game.phase==="ended")throw new Error("The match has ended; notes are read-only.");
       if(typeof action.notes!=="string"||action.notes.length>5000)throw new Error("Notes must be 5,000 characters or fewer.");
       const nextNotes=action.notes;
-      if(nextNotes!==(actor.notes||"")){
-        const key=this.noteHistoryKey(actor.id);
-        const history=await this.state.storage.get<NoteHistoryEntry[]>(key)||[];
-        history.push({id:crypto.randomUUID(),playerId:actor.id,playerName:actor.name,text:nextNotes,at:now});
-        if(history.length>MAX_NOTE_HISTORY_PER_PLAYER)history.splice(0,history.length-MAX_NOTE_HISTORY_PER_PLAYER);
-        await this.state.storage.put(key,history);
-        actor.notes=nextNotes;
-      }
+      if(nextNotes!==(actor.notes||"")) actor.notes=nextNotes;
       return;
     }
     if (action.type === "setMapSize") {
