@@ -13,7 +13,7 @@ Persistent browser-based multiplayer tank tactics game. The React client is host
 - Green and red player markers indicate private ally/enemy labels, not alive or eliminated status.
 - Opponents cannot see your firing range or individual online status. Only an aggregate online headcount is shown.
 - Attacker attribution is hidden for non-lethal damage; victims can see who eliminated them.
-- Private notes autosave to the server. Their revision history is available only to the host after game end.
+- Private notes autosave immediately. Hourly backups are saved only when notes change, with a final snapshot at match end. The private backup history is visible only to the host after game end.
 - Turn-based movement, attacks, repairs, range upgrades, AP gifts, heart gifts, and the daily AP timer.
 
 ## Joining a match
