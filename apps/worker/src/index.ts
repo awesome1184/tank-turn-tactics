@@ -308,25 +308,55 @@ export class GameRoom {
     return json({ ticket, expiresAt: now + 60_000 });
   }
 
-  // Only the host may clear a completed match. Requiring the player's private
-  // session token prevents unauthenticated visitors from resetting everyone.
+  // Only the host may restart a match. The private session token prevents
+  // unauthenticated visitors from resetting the shared game. Keep every player
+  // record and credential so connected and returning players retain their seats.
   private async reset(request: Request): Promise<Response> {
     const body = await request.json() as { playerId?: unknown; token?: unknown };
     if (typeof body.playerId !== "string" || typeof body.token !== "string") {
-      return json({ error: "A valid host session is required to reset the match." }, 400);
+      return json({ error: "A valid host session is required to restart the match." }, 400);
     }
     const game = await this.getGame();
-    if (!game) return json({ error: "There is no shared match to reset." }, 409);
+    if (!game) return json({ error: "There is no shared match to restart." }, 409);
     const actor = game.players.find(player => player.id === body.playerId && player.token === body.token);
     if (!actor) return json({ error: "That player session is not valid for this match." }, 403);
-    if (!actor.host) return json({ error: "Only the match host can reset the shared match." }, 403);
-    if (game.phase !== "ended") return json({ error: "The host can reset the match only after it ends." }, 409);
+    if (!actor.host) return json({ error: "Only the match host can restart the shared match." }, 403);
+    if (game.phase === "lobby") return json({ error: "The shared match is already in the lobby." }, 409);
 
-    await this.state.storage.delete("game");
-    for (const socket of this.state.getWebSockets()) {
-      try { socket.close(1008, "Shared match reset."); } catch { /* already closed */ }
+    const now = Date.now();
+    const hostId = game.hostId || actor.id;
+    game.phase = "lobby";
+    game.startedAt = null;
+    game.updatedAt = now;
+    game.winnerId = null;
+    game.endReason = null;
+    game.obstacles = [];
+    game.juryCycleEndsAt = null;
+    game.juryVotes = {};
+    game.notesHistory = [];
+    game.events = [];
+    game.nextEventId = 1;
+
+    for (const player of game.players) {
+      player.host = player.id === hostId;
+      player.hp = STARTING_HP;
+      player.ap = STARTING_AP;
+      player.range = STARTING_RANGE;
+      player.x = null;
+      player.y = null;
+      player.alive = true;
+      player.killedByName = null;
+      player.nextApAt = null;
+      player.lastSeenEventId = 0;
+      player.replayEvents = [];
+      delete player.replayMapSnapshot;
     }
-    return json({ success: true, reset: true });
+
+    // Keep WebSockets open and broadcast the lobby state to everyone. Offline
+    // players will also return to this lobby when they reconnect with the same key.
+    await this.save(game);
+    this.broadcast(game);
+    return json({ success: true, reset: true, playerCount: game.players.length });
   }
 
   private async getGame(): Promise<GameState | null> {

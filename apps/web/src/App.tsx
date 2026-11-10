@@ -283,6 +283,13 @@ export default function App() {
             const nextState=message.state as PublicGameState;
             setGame(nextState);
             setSelectedId(old=>old&&nextState.players.some((p:PublicPlayer)=>p.id===old)?old:null);
+            if(nextState.phase==="lobby"){
+              setReplayEvents([]);
+              setReplayIndex(0);
+              setSelectedMove(null);
+              setMoveConfirmationOpen(false);
+              setJuryTarget("");
+            }
             const serverNotes=nextState.me.notes||"";
             if(notesDirtyRef.current){if(serverNotes===notesDraftRef.current)notesDirtyRef.current=false;}
             else{notesDraftRef.current=serverNotes;setNotesDraft(serverNotes);}
@@ -340,12 +347,12 @@ export default function App() {
     } finally { setBusy(false); }
   };
   const resetSharedMatch = async () => {
-    if (!session || !window.confirm("Reset the completed match? This removes every player, match record, private note, and recovery key. Everyone will need to join again.")) return;
+    if (!session || !window.confirm("Restart the current match? Everyone in the roster will return to the lobby. Player accounts, recovery keys, names, colors, and private notes stay intact. The battlefield, match stats, jury state, notes history, and public event log will be reset.")) return;
     setResettingMatch(true);
     setError("");
     try {
       await api("/api/game/reset", { playerId: session.playerId, token: session.token });
-      setError("Reset accepted. The old match is closing for everyone.");
+      setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not reset the shared match.");
     } finally {
@@ -572,7 +579,7 @@ export default function App() {
           <section className="panel event-log-panel"><div className="section-title"><div><div className="eyebrow">MATCH HISTORY</div><h2>Public event log</h2></div><small>{game.eventLog.length} events</small></div>
             <div className="event-log-list">{game.eventLog.length?game.eventLog.slice().reverse().slice(0,200).map(event=><article key={event.id}><time>{new Date(event.at).toLocaleString()}</time><p>{event.message}</p></article>):<small className="muted">No events yet.</small>}</div>
           </section>
-          {game.phase==="ended"&&me?.host&&<section className="panel reset-match-panel"><div className="eyebrow">HOST CONTROL</div><h2>Start another match</h2><p>The current match has ended. Resetting clears the completed game, all player accounts, private notes, and recovery keys. Everyone will need to join again.</p><button className="danger-button" disabled={resettingMatch || connection!=="online"} onClick={resetSharedMatch}><RefreshCw size={14}/>{resettingMatch?"Resetting…":"Reset for a new match"}</button></section>}
+          {(game.phase==="active"||game.phase==="ended")&&me?.host&&<section className="panel reset-match-panel"><div className="eyebrow">HOST CONTROL</div><h2>Restart match</h2><p>Return everyone in the current roster to the lobby without deleting player accounts or recovery keys. Names, colors, and private notes stay intact; battlefield progress, jury votes, notes history, and the public event log are reset.</p><button className="danger-button" disabled={resettingMatch || connection!=="online"} onClick={resetSharedMatch}><RefreshCw size={14}/>{resettingMatch?"Restarting…":"Return everyone to lobby"}</button></section>}
           {game.phase==="ended"&&me?.host&&<section className="panel notes-archive"><div className="section-title"><div><div className="eyebrow">HOST RECORD</div><h2>Private notes history</h2></div></div><p>Saved revisions from players’ private notes, visible only to the host after the match ends.</p><button className="secondary-button" onClick={loadNotesArchive} disabled={notesArchiveLoading}>{notesArchiveLoading?"Loading…":"Load notes history"}</button>{notesArchive&&<div className="notes-archive-list">{notesArchive.length?notesArchive.map(entry=><article key={entry.id}><div><b>{entry.playerName}</b><time>{new Date(entry.at).toLocaleString()}</time></div><pre>{entry.text||"(cleared notes)"}</pre></article>):<small>No notes were saved this match.</small>}</div>}</section>}
         </aside>
       </div>
