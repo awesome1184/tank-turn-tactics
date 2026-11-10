@@ -148,6 +148,7 @@ export class GameRoom {
   private queue: Promise<void> = Promise.resolve();
   private messageLimits = new Map<string, { windowStart: number; total: number; actions: number; lastSyncAt: number; violationStart: number; violations: number }>();
   private joinAttempts = new Map<string, number[]>();
+  private notesBackupAlarmChecked = false;
 
   private exclusive<T>(task: () => Promise<T>): Promise<T> {
     const next = this.queue.then(task, task);
@@ -161,28 +162,26 @@ export class GameRoom {
 
   async alarm(): Promise<void> {
     await this.exclusive(async () => {
-      const game = await this.getGame();
-      if (!game) {
-        await this.state.storage.deleteAlarm();
-        return;
-      }
-
       try {
+        const game = await this.getGame();
+        if (!game) {
+          await this.state.storage.deleteAlarm();
+          this.notesBackupAlarmChecked = false;
+          return;
+        }
+
         await this.backupNotesIfChanged(game, Date.now());
+        if (game.phase === "ended") {
+          await this.state.storage.deleteAlarm();
+          this.notesBackupAlarmChecked = false;
+        } else {
+          await this.state.storage.setAlarm(this.nextNoteBackupAt(Date.now()));
+          this.notesBackupAlarmChecked = true;
+        }
       } catch (error) {
         console.error("Hourly private-note backup failed; retrying in five minutes.", error);
-        if (game.phase !== "ended") {
-          await this.state.storage.setAlarm(Date.now() + NOTE_BACKUP_RETRY_MS);
-        } else {
-          await this.state.storage.deleteAlarm();
-        }
-        return;
-      }
-
-      if (game.phase === "ended") {
-        await this.state.storage.deleteAlarm();
-      } else {
-        await this.state.storage.setAlarm(this.nextNoteBackupAt(Date.now()));
+        await this.state.storage.setAlarm(Date.now() + NOTE_BACKUP_RETRY_MS);
+        this.notesBackupAlarmChecked = true;
       }
     });
   }
@@ -281,8 +280,15 @@ export class GameRoom {
       const wasEnded = game.phase === "ended";
       await this.applyAction(game, player, action, now);
       if (!wasEnded && game.phase === "ended") {
-        await this.backupNotesIfChanged(game, now);
-        await this.state.storage.deleteAlarm();
+        try {
+          await this.backupNotesIfChanged(game, now);
+          await this.state.storage.deleteAlarm();
+          this.notesBackupAlarmChecked = false;
+        } catch (error) {
+          console.error("Final private-note backup failed; retrying in five minutes.", error);
+          await this.state.storage.setAlarm(now + NOTE_BACKUP_RETRY_MS);
+          this.notesBackupAlarmChecked = true;
+        }
       }
       game.updatedAt = now;
       this.updateOnlineCursors(game);
@@ -473,9 +479,11 @@ export class GameRoom {
     return (Math.floor(now / NOTE_BACKUP_INTERVAL_MS) + 1) * NOTE_BACKUP_INTERVAL_MS;
   }
   private async ensureNotesBackupAlarm():Promise<void> {
+    if (this.notesBackupAlarmChecked) return;
     if (await this.state.storage.getAlarm() === null) {
       await this.state.storage.setAlarm(this.nextNoteBackupAt(Date.now()));
     }
+    this.notesBackupAlarmChecked = true;
   }
   private sendError(socket: WebSocket, message: string): void {
     try { socket.send(JSON.stringify({ type: "error", message })); } catch { /* closed socket */ }
@@ -665,6 +673,7 @@ export class GameRoom {
       };
       this.recordEvent(game,"player-join",null,player);
       await this.save(game);
+      await this.ensureNotesBackupAlarm();
       return json({ playerId: player.id, token: player.token, name: player.name });
     }
     if (game.phase !== "lobby") {
