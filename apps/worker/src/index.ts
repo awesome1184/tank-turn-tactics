@@ -2,7 +2,7 @@ import {
   BOARD_SIZE, MAP_SIZES, DAILY_AP_INTERVAL_MS, MAX_HP, MAX_PLAYERS,
   RANGE_UPGRADE_COST, STARTING_AP, STARTING_HP, STARTING_RANGE, chebyshevDistance,
 } from "../../../packages/shared/src/contracts";
-import type { ClientAction, GameState, MatchEvent, Player, PublicEventLogEntry, PublicGameState, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
+import type { ClientAction, GameState, MatchEvent, NoteHistoryEntry, Player, PublicEventLogEntry, PublicGameState, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
 
 export interface Env { ROOMS: DurableObjectNamespace; TURNSTILE_SECRET_KEY?: string; }
 class RequestError extends Error {
@@ -73,7 +73,8 @@ const cors = (response: Response) => {
   return new Response(response.body, { status: response.status, headers });
 };
 const stubFor = (env: Env) => env.ROOMS.get(env.ROOMS.idFromName("shared-game-v1"));
-const GAME_SAVE_VERSION = 2;
+const GAME_SAVE_VERSION = 3;
+const MAX_NOTE_HISTORY_PER_PLAYER = 100;
 const PLAYER_COLORS=["#57a6e8","#ef7373","#65c98c","#e5b85c","#b18ae8","#4bc8c8","#ed9560","#d47bc1"];
 function playerColor(index:number):string{return PLAYER_COLORS[index%PLAYER_COLORS.length];}
 function makeToken(): string { return crypto.randomUUID() + crypto.randomUUID().replaceAll("-", ""); }
@@ -247,7 +248,7 @@ export class GameRoom {
         return;
       }
 
-      this.applyAction(game, player, action, now);
+      await this.applyAction(game, player, action, now);
       game.updatedAt = now;
       this.updateOnlineCursors(game);
       await this.save(game);
@@ -333,6 +334,7 @@ export class GameRoom {
     game.obstacles = [];
     game.juryCycleEndsAt = null;
     game.juryVotes = {};
+    await Promise.all(game.players.map(player => this.state.storage.delete(this.noteHistoryKey(player.id))));
     game.notesHistory = [];
     game.events = [];
     game.nextEventId = 1;
@@ -364,9 +366,32 @@ export class GameRoom {
     if (game) {
       let migrated = false;
 
-      // Version 2 adds 10x10 as a supported map size. This is an additive
-      // migration: keep every existing player, credential, stat, note, and
-      // match record. Existing supported map sizes remain unchanged.
+      // Move legacy note revisions out of the main game record. Keeping each
+      // player's history in its own storage value prevents note edits from
+      // exhausting the size limit of the shared game save.
+      if (!Array.isArray(game.notesHistory)) { game.notesHistory = []; migrated = true; }
+      if (game.notesHistory.length) {
+        const grouped = new Map<string, NoteHistoryEntry[]>();
+        for (const entry of game.notesHistory) {
+          if (!entry || typeof entry.id !== "string" || typeof entry.playerId !== "string") continue;
+          const entries = grouped.get(entry.playerId) || [];
+          entries.push(entry);
+          grouped.set(entry.playerId, entries);
+        }
+        for (const [playerId, entries] of grouped) {
+          const key = this.noteHistoryKey(playerId);
+          const existing = await this.state.storage.get<NoteHistoryEntry[]>(key) || [];
+          const unique = new Map<string, NoteHistoryEntry>();
+          for (const entry of [...existing, ...entries]) unique.set(entry.id, entry);
+          const retained = [...unique.values()].sort((a, b) => a.at - b.at).slice(-MAX_NOTE_HISTORY_PER_PLAYER);
+          await this.state.storage.put(key, retained);
+        }
+        game.notesHistory = [];
+        migrated = true;
+      }
+
+      // Version 3 stores note history separately while preserving every existing
+      // player, credential, stat, note, and match record.
       if (game.saveVersion !== GAME_SAVE_VERSION) {
         game.saveVersion = GAME_SAVE_VERSION;
         migrated = true;
@@ -385,7 +410,6 @@ export class GameRoom {
         game.juryCycleEndsAt = game.startedAt === null ? null : game.startedAt + DAILY_AP_INTERVAL_MS;
         migrated = true;
       }
-      if (!game.notesHistory) { game.notesHistory = []; migrated = true; }
       if (game.endReason === undefined) { game.endReason = null; migrated = true; }
       if (!game.events) { game.events = []; migrated = true; }
       if (!game.nextEventId) {
@@ -529,6 +553,8 @@ export class GameRoom {
     }
   }
 
+  private noteHistoryKey(playerId:string):string{return `notes-history:${playerId}`;}
+
   private async notesArchive(request:Request):Promise<Response>{
     const body=await request.json() as {playerId?:unknown;token?:unknown};
     if(typeof body.playerId!=="string"||typeof body.token!=="string")return json({error:"Invalid session."},400);
@@ -537,7 +563,9 @@ export class GameRoom {
     if(!game||!actor)return json({error:"Invalid session."},403);
     if(!actor.host)return json({error:"Only the host can view the notes archive."},403);
     if(game.phase!=="ended")return json({error:"The notes archive is available after the match ends."},409);
-    return json({entries:game.notesHistory||[]});
+    const histories=await Promise.all(game.players.map(player=>this.state.storage.get<NoteHistoryEntry[]>(this.noteHistoryKey(player.id))));
+    const entries=histories.flatMap(history=>history||[]).sort((a,b)=>a.at-b.at);
+    return json({entries});
   }
 
   private async join(request: Request): Promise<Response> {
@@ -699,7 +727,7 @@ export class GameRoom {
     return changed;
   }
 
-  private applyAction(game: GameState, actor: Player, action: ClientAction, now: number): void {
+  private async applyAction(game: GameState, actor: Player, action: ClientAction, now: number): Promise<void> {
     if (action.type === "claimHost") {
       if (game.phase !== "lobby") throw new Error("Host can only be changed before the match starts.");
       if (actor.host) return;
@@ -733,6 +761,7 @@ export class GameRoom {
       delete game.juryVotes[target.id];
       for(const vote of Object.values(game.juryVotes))if(vote.targetId===target.id)vote.invalidated=true;
       game.notesHistory=game.notesHistory.filter(entry=>entry.playerId!==target.id);
+      await this.state.storage.delete(this.noteHistoryKey(target.id));
       return;
     }
     if (action.type === "setColor") {
@@ -745,10 +774,12 @@ export class GameRoom {
       if(typeof action.notes!=="string"||action.notes.length>5000)throw new Error("Notes must be 5,000 characters or fewer.");
       const nextNotes=action.notes;
       if(nextNotes!==(actor.notes||"")){
-        const own=game.notesHistory.filter(entry=>entry.playerId===actor.id);
-        if(own.length>=30){const oldest=own[0].id;game.notesHistory=game.notesHistory.filter(entry=>entry.id!==oldest);}
+        const key=this.noteHistoryKey(actor.id);
+        const history=await this.state.storage.get<NoteHistoryEntry[]>(key)||[];
+        history.push({id:crypto.randomUUID(),playerId:actor.id,playerName:actor.name,text:nextNotes,at:now});
+        if(history.length>MAX_NOTE_HISTORY_PER_PLAYER)history.splice(0,history.length-MAX_NOTE_HISTORY_PER_PLAYER);
+        await this.state.storage.put(key,history);
         actor.notes=nextNotes;
-        game.notesHistory.push({id:crypto.randomUUID(),playerId:actor.id,playerName:actor.name,text:nextNotes,at:now});
       }
       return;
     }
