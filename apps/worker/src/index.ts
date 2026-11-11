@@ -516,7 +516,6 @@ export class GameRoom {
         case "attack": message=event.killed?`${target} was eliminated.`:`${target} was hit.`; break;
         case "heal": message=`${actor} repaired their tank.`; break;
         case "range-upgrade": message=`${actor} upgraded their range.`; break;
-        case "gift-ap": message=null; break;
         case "gift-heart": message=`${actor} gave a heart to ${target}.`; break;
         case "match-end": message=event.targetName?`${target} wins!`:"The match ended."; break;
         default: message=null;
