@@ -504,6 +504,8 @@ export class GameRoom {
 
   private publicEventLog(game:GameState):PublicEventLogEntry[] {
     return game.events.slice(-500).flatMap(event=>{
+      // AP gifts are private transactions; never include them in the shared event log.
+      if(event.type==="gift-ap")return [];
       const actor=event.actorName||"A player", target=event.targetName||"A player";
       let message:string|null=null;
       switch(event.type){
@@ -514,7 +516,11 @@ export class GameRoom {
         case "attack": message=event.killed?`${target} was eliminated.`:`${target} was hit.`; break;
         case "heal": message=`${actor} repaired their tank.`; break;
         case "range-upgrade": message=`${actor} upgraded their range.`; break;
-        case "gift-ap": message=`${actor} sent 1 AP to ${target}.`; break;
+        case "gift-ap":
+          if(event.actorId===player.id) message=`You sent 1 AP to ${target}.`;
+          else if(event.targetId===player.id) message=`${actor} sent 1 AP to you.`;
+          else message=null;
+          break;
         case "gift-heart": message=`${actor} gave a heart to ${target}.`; break;
         case "match-end": message=event.targetName?`${target} wins!`:"The match ended."; break;
         default: message=null;
