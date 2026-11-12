@@ -777,16 +777,26 @@ export class GameRoom {
     }
     if (game.juryCycleEndsAt !== null && now >= game.juryCycleEndsAt) {
       const votesByTarget = new Map<string, number>();
+      let totalVotesCast = 0;
+      const eligibleJurors = game.players.filter((player) => !player.alive);
       for (const [voterId, vote] of Object.entries(game.juryVotes)) {
         const voter = game.players.find((p) => p.id === voterId);
         const target = game.players.find((p) => p.id === vote.targetId);
         if (vote.invalidated || !voter || voter.alive || !target || !target.alive) continue;
         votesByTarget.set(vote.targetId, (votesByTarget.get(vote.targetId) || 0) + 1);
+        totalVotesCast += 1;
       }
+
+      // A strict majority of ballots cast or at least three votes earns +1 AP.
+      // Unanimity requires every currently eligible juror to have voted for
+      // the same living player; this also works with a single juror.
+      const unanimous = eligibleJurors.length > 0
+        && totalVotesCast === eligibleJurors.length
+        && votesByTarget.size === 1;
       for (const [targetId, voteCount] of votesByTarget) {
-        if (voteCount >= 3) {
+        if (unanimous || voteCount > totalVotesCast / 2 || voteCount >= 3) {
           const recipient = game.players.find((p) => p.id === targetId);
-          if (recipient?.alive) recipient.ap += 1;
+          if (recipient?.alive) recipient.ap += unanimous ? 2 : 1;
         }
       }
       // Resolve stored votes once even if the room was offline for several days.
