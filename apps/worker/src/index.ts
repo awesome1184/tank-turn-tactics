@@ -653,7 +653,9 @@ export class GameRoom {
     const actor=game?.players.find(p=>p.id===body.playerId&&p.token===body.token);
     if(!game||!actor)return json({error:"Invalid session."},403);
     if(!actor.host)return json({error:"Only the host can view the notes archive."},403);
-    if(game.phase!=="ended")return json({error:"The notes archive is available after the match ends."},409);
+    // Let the host review the archive during play as well as after the match.
+    // Capture each player's latest saved notes before returning the history.
+    await this.backupNotesIfChanged(game,Date.now());
     const histories=await Promise.all(game.players.map(player=>this.state.storage.get<NoteHistoryEntry[]>(this.noteHistoryKey(player.id))));
     const entries=histories.flatMap(history=>history||[]).sort((a,b)=>a.at-b.at);
     return json({entries});
