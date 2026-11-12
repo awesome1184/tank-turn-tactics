@@ -387,6 +387,25 @@ export default function App() {
     catch(e){setError(e instanceof Error?e.message:"Could not load notes history.");}
     finally{setNotesArchiveLoading(false);}
   };
+  const downloadNotesAndLabels=()=>{
+    if(!session||!game||!notesArchive)return;
+    const names=new Map(game.players.map(player=>[player.id,player.name]));
+    const allyEnemyLabels=Object.entries(labels)
+      .filter(([,label])=>label==="ally"||label==="enemy")
+      .map(([playerId,label])=>({playerId,playerName:names.get(playerId)||"Player no longer in roster",label}));
+    const data={
+      exportedAt:new Date().toISOString(),
+      exportedBy:session.name,
+      roster:game.players.map(({id,name,alive,color})=>({id,name,alive,color})),
+      allyEnemyLabels,
+      privateNotesHistory:notesArchive,
+    };
+    const blob=new Blob([JSON.stringify(data,null,2)+"\\n"],{type:"application/json;charset=utf-8"});
+    const url=URL.createObjectURL(blob);
+    const anchor=document.createElement("a");
+    anchor.href=url;anchor.download="tank-turn-tactics-match-records-"+new Date().toISOString().slice(0,10)+".json";
+    anchor.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+  };
   const editNotes=(value:string)=>{notesDraftRef.current=value;notesDirtyRef.current=value!==(game?.me.notes||"");setNotesDraft(value);};
   const skipReplay=()=>{
     if(replayEvents.length)send({type:"ackReplay",lastEventId:replayEvents[replayEvents.length-1].id});
@@ -561,12 +580,14 @@ export default function App() {
           </section>
           {game.phase === "active" && game.jury.memberCount > 0 && <section className="panel jury-panel">
             <div className="section-title"><div><div className="eyebrow">THE JURY</div><h2>Secret ballot</h2></div><span className="jury-count">{game.jury.memberCount} juror{game.jury.memberCount === 1 ? "" : "s"}</span></div>
-            <p className="jury-description">Eliminated players can secretly support one living tank each day. A strict majority of votes cast or at least three votes for the same player awards +1 AP. If every juror votes for the same player, that player earns +2 AP instead, even with only one juror.</p>
-            <div className="jury-deadline"><span>Ballot closes in</span><strong>{game.jury.cycleEndsAt ? duration(game.jury.cycleEndsAt - now) : "—"}</strong></div>
-            {game.me.isJuryMember ? (game.me.hasVoted
-              ? <div className="jury-confirmation"><Shield size={16}/> Your vote is recorded and remains secret until the cycle resolves.</div>
-              : <div className="jury-vote-form"><label>CHOOSE A LIVING PLAYER<select value={effectiveJuryTarget} onChange={(e) => setJuryTarget(e.target.value)}>{juryCandidates.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><button className="jury-vote-button" disabled={!effectiveJuryTarget || connection !== "online"} onClick={() => send({ type: "juryVote", targetId: effectiveJuryTarget })}>Cast secret vote <ChevronRight size={16}/></button></div>
-            ) : <div className="jury-confirmation"><Skull size={16}/> Only eliminated players can cast a jury vote. Votes and AP balances are private.</div>}
+            <p className="jury-description">Eliminated players can secretly support one living tank each day. The ballot resolves as soon as every juror has voted, or at the daily deadline. A strict majority of votes cast or at least three votes for the same player awards +1 AP. If every juror votes for the same player, that player earns +2 AP instead, even with only one juror.</p>
+            <div className="jury-deadline"><span>{game.jury.closed ? "Next ballot opens in" : "Ballot closes in"}</span><strong>{game.jury.cycleEndsAt ? duration(game.jury.cycleEndsAt - now) : "—"}</strong></div>
+            {game.jury.closed
+              ? <div className="jury-confirmation"><Shield size={16}/> All jurors have voted. The ballot is complete and any AP rewards have already been applied.</div>
+              : game.me.isJuryMember ? (game.me.hasVoted
+                ? <div className="jury-confirmation"><Shield size={16}/> Your vote is recorded and remains secret until the cycle resolves.</div>
+                : <div className="jury-vote-form"><label>CHOOSE A LIVING PLAYER<select value={effectiveJuryTarget} onChange={(e) => setJuryTarget(e.target.value)}>{juryCandidates.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><button className="jury-vote-button" disabled={!effectiveJuryTarget || connection !== "online"} onClick={() => send({ type: "juryVote", targetId: effectiveJuryTarget })}>Cast secret vote <ChevronRight size={16}/></button></div>
+              ) : <div className="jury-confirmation"><Skull size={16}/> Only eliminated players can cast a jury vote. Votes and AP balances are private.</div>}
           </section>}
           <section className="panel notes-panel"><div className="section-title"><div><div className="eyebrow">PERSONAL</div><h2>Private notes</h2></div><small>{notesDirtyRef.current?"Saving privately…":"Saved privately"}</small></div>
             <textarea value={notesDraft} maxLength={5000} rows={5} placeholder="Keep private notes about the match, players, plans, or observations…" onChange={e=>editNotes(e.target.value)} onBlur={()=>{if(notesDirtyRef.current&&socketRef.current?.readyState===WebSocket.OPEN)socketRef.current.send(JSON.stringify({type:"saveNotes",notes:notesDraftRef.current}));}}/>
@@ -580,7 +601,7 @@ export default function App() {
             <div className="event-log-list">{game.eventLog.length?game.eventLog.slice().reverse().slice(0,200).map(event=><article key={event.id}><time>{new Date(event.at).toLocaleString()}</time><p>{event.message}</p></article>):<small className="muted">No events yet.</small>}</div>
           </section>
           {(game.phase==="active"||game.phase==="ended")&&me?.host&&<section className="panel reset-match-panel"><div className="eyebrow">HOST CONTROL</div><h2>Restart match</h2><p>Return everyone in the current roster to the lobby without deleting player accounts or recovery keys. Names, colors, and private notes stay intact; battlefield progress, jury votes, notes history, and the public event log are reset.</p><button className="danger-button" disabled={resettingMatch || connection!=="online"} onClick={resetSharedMatch}><RefreshCw size={14}/>{resettingMatch?"Restarting…":"Return everyone to lobby"}</button></section>}
-          {game.phase==="ended"&&me?.host&&<section className="panel notes-archive"><div className="section-title"><div><div className="eyebrow">HOST RECORD</div><h2>Private notes history</h2></div></div><p>Automatic hourly snapshots, saved only when a player’s notes differ from their previous backup. A final snapshot is saved when the match ends. Visible only to the host.</p><button className="secondary-button" onClick={loadNotesArchive} disabled={notesArchiveLoading}>{notesArchiveLoading?"Loading…":"Load notes history"}</button>{notesArchive&&<div className="notes-archive-list">{notesArchive.length?notesArchive.map(entry=><article key={entry.id}><div><b>{entry.playerName}</b><time>{new Date(entry.at).toLocaleString()}</time></div><pre>{entry.text||"(cleared notes)"}</pre></article>):<small>No notes were saved this match.</small>}</div>}</section>}
+          {game.phase==="ended"&&me?.host&&<section className="panel notes-archive"><div className="section-title"><div><div className="eyebrow">HOST RECORD</div><h2>Private notes history</h2></div></div><p>Automatic hourly snapshots, saved only when a player’s notes differ from their previous backup. A final snapshot is saved when the match ends. Ally/enemy labels are private to this browser, so the export includes the labels saved here alongside the server-side notes history.</p><button className="secondary-button" onClick={loadNotesArchive} disabled={notesArchiveLoading}>{notesArchiveLoading?"Loading…":"Load notes history"}</button>{notesArchive&&<><button className="secondary-button" onClick={downloadNotesAndLabels}>Download notes + ally/enemy data</button><div className="notes-archive-list">{notesArchive.length?notesArchive.map(entry=><article key={entry.id}><div><b>{entry.playerName}</b><time>{new Date(entry.at).toLocaleString()}</time></div><pre>{entry.text||"(cleared notes)"}</pre></article>):<small>No notes were saved this match.</small>}</div></>}</section>}
         </aside>
       </div>
       <p className="server-note"><Shield size={14}/> Server-authoritative match · AP and actions are validated by the game server.</p>
