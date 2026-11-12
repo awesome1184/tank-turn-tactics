@@ -389,7 +389,7 @@ export default function App() {
   };
   const downloadNotesAndLabels=()=>{
     if(!session||!game||!notesArchive)return;
-    const names=new Map(game.players.map(player=>[player.id,player.name]));
+    const names=new Map(game.players.map(player=>[player.id,player.name] as const));
     const allyEnemyLabels=Object.entries(labels)
       .filter(([,label])=>label==="ally"||label==="enemy")
       .map(([playerId,label])=>({playerId,playerName:names.get(playerId)||"Player no longer in roster",label}));
