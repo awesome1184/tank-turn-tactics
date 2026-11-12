@@ -12,8 +12,8 @@ export type PlayerLabel="ally"|"enemy"|"unmarked";
 export type MatchEventType="player-join"|"player-kick"|"match-start"|"move"|"attack"|"heal"|"range-upgrade"|"gift-ap"|"gift-heart"|"daily-ap"|"match-end";
 export interface ReplayMapPlayer{id:string;name:string;color:string;x:number|null;y:number|null;alive:boolean;}
 export interface ReplayMapSnapshot{boardSize:number;obstacles:Array<[number,number]>;players:ReplayMapPlayer[];}
-export interface MatchEvent{id:number;at:number;type:MatchEventType;actorId:string|null;actorName:string|null;targetId?:string;targetName?:string;x?:number;y?:number;amount?:number;killed?:boolean;mapSnapshot?:ReplayMapSnapshot;}
-export interface PublicReplayEvent{id:number;at:number;message:string;type?:MatchEventType;actorId?:string|null;targetId?:string;x?:number;y?:number;killed?:boolean;mapSnapshot?:ReplayMapSnapshot;}
+export interface MatchEvent{id:number;at:number;type:MatchEventType;actorId:string|null;actorName:string|null;targetId?:string;targetName?:string;x?:number;y?:number;fromX?:number;fromY?:number;amount?:number;killed?:boolean;mapSnapshot?:ReplayMapSnapshot;}
+export interface PublicReplayEvent{id:number;at:number;message:string;type?:MatchEventType;actorId?:string|null;targetId?:string;x?:number;y?:number;fromX?:number;fromY?:number;killed?:boolean;mapSnapshot?:ReplayMapSnapshot;}
 export interface PublicEventLogEntry{id:number;at:number;message:string;}
 export interface NoteHistoryEntry{id:string;playerId:string;playerName:string;text:string;at:number;}
 export interface Player{id:string;token:string;name:string;color:string;notes:string;killedByName:string|null;hp:number;ap:number;range:number;x:number|null;y:number|null;alive:boolean;host:boolean;joinedAt:number;lastConnectedAt?:number;nextApAt:number|null;online:boolean;lastSeenEventId:number;replayEvents?:MatchEvent[];replayMapSnapshot?:ReplayMapSnapshot;}
