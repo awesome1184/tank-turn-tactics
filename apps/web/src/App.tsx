@@ -400,7 +400,7 @@ export default function App() {
       allyEnemyLabels,
       privateNotesHistory:notesArchive,
     };
-    const blob=new Blob([JSON.stringify(data,null,2)+"\\n"],{type:"application/json;charset=utf-8"});
+    const blob=new Blob([JSON.stringify(data,null,2)+"\n"],{type:"application/json;charset=utf-8"});
     const url=URL.createObjectURL(blob);
     const anchor=document.createElement("a");
     anchor.href=url;anchor.download="tank-turn-tactics-match-records-"+new Date().toISOString().slice(0,10)+".json";
