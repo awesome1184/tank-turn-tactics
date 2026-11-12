@@ -517,7 +517,9 @@ export class GameRoom {
         case "player-join": message=`${target} joined the lobby.`; break;
         case "player-kick": message=`${actor} kicked ${target}.`; break;
         case "match-start": message="The match started."; break;
-        case "move": message=`${actor} moved to (${(event.x??-1)+1}, ${(event.y??-1)+1}).`; break;
+        case "move": message=event.fromX!==undefined&&event.fromY!==undefined
+          ? `${actor} moved from (${event.fromX+1}, ${event.fromY+1}) to (${(event.x??-1)+1}, ${(event.y??-1)+1}).`
+          : `${actor} moved to (${(event.x??-1)+1}, ${(event.y??-1)+1}).`; break;
         case "attack": message=event.killed?`${target} was eliminated.`:`${target} was hit.`; break;
         case "heal": message=`${actor} repaired their tank.`; break;
         case "range-upgrade": message=`${actor} upgraded their range.`; break;
@@ -578,7 +580,9 @@ export class GameRoom {
         case "player-join": message=`${target} joined the lobby.`; break;
         case "player-kick": message=`${actor} kicked ${target}.`; break;
         case "match-start": message="The match started."; break;
-        case "move": message=`${actor} moved to (${(event.x??-1)+1}, ${(event.y??-1)+1}).`; break;
+        case "move": message=event.fromX!==undefined&&event.fromY!==undefined
+          ? `${actor} moved from (${event.fromX+1}, ${event.fromY+1}) to (${(event.x??-1)+1}, ${(event.y??-1)+1}).`
+          : `${actor} moved to (${(event.x??-1)+1}, ${(event.y??-1)+1}).`; break;
         case "attack":
           if(event.actorId===player.id) message=event.killed?`You eliminated ${target}.`:`You hit ${target}.`;
           else if(event.targetId===player.id) message=event.killed?`You were eliminated by ${actor}.`:"You were hit.";
@@ -601,6 +605,8 @@ export class GameRoom {
         ...(event.targetId?{targetId:event.targetId}:{}),
         ...(event.x!==undefined?{x:event.x}:{}),
         ...(event.y!==undefined?{y:event.y}:{}),
+        ...(event.fromX!==undefined?{fromX:event.fromX}:{}),
+        ...(event.fromY!==undefined?{fromY:event.fromY}:{}),
         ...(event.killed!==undefined?{killed:event.killed}:{}),
         ...(initialMap?{mapSnapshot:initialMap}:event.mapSnapshot?{mapSnapshot:event.mapSnapshot}:{}),
       });
@@ -912,9 +918,11 @@ export class GameRoom {
         if (!path || path.length < 2) throw new Error("That tile cannot be reached.");
         const cost = path.length - 1;
         this.spend(actor, cost);
+        const fromX = actor.x!;
+        const fromY = actor.y!;
         actor.x = x;
         actor.y = y;
-        this.recordEvent(game,"move",actor,undefined,{x,y});
+        this.recordEvent(game,"move",actor,undefined,{fromX,fromY,x,y});
         return;
       }
       case "attack": {
