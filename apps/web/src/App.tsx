@@ -561,7 +561,7 @@ export default function App() {
           </section>
           {game.phase === "active" && game.jury.memberCount > 0 && <section className="panel jury-panel">
             <div className="section-title"><div><div className="eyebrow">THE JURY</div><h2>Secret ballot</h2></div><span className="jury-count">{game.jury.memberCount} juror{game.jury.memberCount === 1 ? "" : "s"}</span></div>
-            <p className="jury-description">Eliminated players can secretly support one living tank each day. Three or more votes for the same player award that player +1 bonus AP when the daily cycle closes.</p>
+            <p className="jury-description">Eliminated players can secretly support one living tank each day. A strict majority of votes cast or at least three votes for the same player awards +1 AP. If every juror votes for the same player, that player earns +2 AP instead, even with only one juror.</p>
             <div className="jury-deadline"><span>Ballot closes in</span><strong>{game.jury.cycleEndsAt ? duration(game.jury.cycleEndsAt - now) : "—"}</strong></div>
             {game.me.isJuryMember ? (game.me.hasVoted
               ? <div className="jury-confirmation"><Shield size={16}/> Your vote is recorded and remains secret until the cycle resolves.</div>
