@@ -73,7 +73,7 @@ const cors = (response: Response) => {
   return new Response(response.body, { status: response.status, headers });
 };
 const stubFor = (env: Env) => env.ROOMS.get(env.ROOMS.idFromName("shared-game-v1"));
-const GAME_SAVE_VERSION = 4;
+const GAME_SAVE_VERSION = 5;
 const MAX_NOTE_HISTORY_PER_PLAYER = 100;
 const NOTE_BACKUP_INTERVAL_MS = 60 * 60 * 1000;
 const NOTE_BACKUP_RETRY_MS = 5 * 60 * 1000;
@@ -375,6 +375,7 @@ export class GameRoom {
     game.obstacles = [];
     game.juryCycleEndsAt = null;
     game.juryVotes = {};
+    game.juryClosedEarly = false;
     await Promise.all(game.players.map(player => this.state.storage.delete(this.noteHistoryKey(player.id))));
     game.notesHistory = [];
     game.events = [];
@@ -450,6 +451,10 @@ export class GameRoom {
       if (!game.juryVotes) { game.juryVotes = {}; migrated = true; }
       if (game.juryCycleEndsAt === undefined) {
         game.juryCycleEndsAt = game.startedAt === null ? null : game.startedAt + DAILY_AP_INTERVAL_MS;
+        migrated = true;
+      }
+      if (game.juryClosedEarly === undefined) {
+        game.juryClosedEarly = false;
         migrated = true;
       }
       if (game.endReason === undefined) { game.endReason = null; migrated = true; }
@@ -674,7 +679,7 @@ export class GameRoom {
         saveVersion: GAME_SAVE_VERSION,
         phase: "lobby", hostId: player.id, createdAt: now, startedAt: null,
         updatedAt: now, boardSize: BOARD_SIZE, obstacles: [], players: [player],
-        winnerId:null,endReason:null,juryCycleEndsAt:null,juryVotes:{},notesHistory:[],events:[],nextEventId:1,
+        winnerId:null,endReason:null,juryCycleEndsAt:null,juryVotes:{},juryClosedEarly:false,notesHistory:[],events:[],nextEventId:1,
       };
       this.recordEvent(game,"player-join",null,player);
       await this.save(game);
@@ -766,6 +771,39 @@ export class GameRoom {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  private resolveJuryBallot(game: GameState, closeUntilNextCycle = false): void {
+    const votesByTarget = new Map<string, number>();
+    let totalVotesCast = 0;
+    const eligibleJurors = game.players.filter((player) => !player.alive);
+    for (const [voterId, vote] of Object.entries(game.juryVotes)) {
+      const voter = game.players.find((p) => p.id === voterId);
+      const target = game.players.find((p) => p.id === vote.targetId);
+      if (vote.invalidated || !voter || voter.alive || !target || !target.alive) continue;
+      votesByTarget.set(vote.targetId, (votesByTarget.get(vote.targetId) || 0) + 1);
+      totalVotesCast += 1;
+    }
+
+    // A strict majority of ballots cast or at least three votes earns +1 AP.
+    // Unanimity requires every currently eligible juror to have voted for
+    // the same living player; this also works with a single juror.
+    const unanimous = eligibleJurors.length > 0
+      && totalVotesCast === eligibleJurors.length
+      && votesByTarget.size === 1;
+    for (const [targetId, voteCount] of votesByTarget) {
+      if (unanimous || voteCount > totalVotesCast / 2 || voteCount >= 3) {
+        const recipient = game.players.find((p) => p.id === targetId);
+        if (recipient?.alive) recipient.ap += unanimous ? 2 : 1;
+      }
+    }
+
+    if (closeUntilNextCycle) {
+      // Keep submitted ballots visible as submitted, but invalidate them so
+      // the scheduled boundary cannot award the same AP a second time.
+      for (const vote of Object.values(game.juryVotes)) vote.invalidated = true;
+      game.juryClosedEarly = true;
+    }
+  }
+
   private applyDailyAp(game: GameState, now: number): boolean {
     if (game.phase !== "active") return false;
     let changed = false;
@@ -776,33 +814,12 @@ export class GameRoom {
       changed = true;
     }
     if (game.juryCycleEndsAt !== null && now >= game.juryCycleEndsAt) {
-      const votesByTarget = new Map<string, number>();
-      let totalVotesCast = 0;
-      const eligibleJurors = game.players.filter((player) => !player.alive);
-      for (const [voterId, vote] of Object.entries(game.juryVotes)) {
-        const voter = game.players.find((p) => p.id === voterId);
-        const target = game.players.find((p) => p.id === vote.targetId);
-        if (vote.invalidated || !voter || voter.alive || !target || !target.alive) continue;
-        votesByTarget.set(vote.targetId, (votesByTarget.get(vote.targetId) || 0) + 1);
-        totalVotesCast += 1;
-      }
-
-      // A strict majority of ballots cast or at least three votes earns +1 AP.
-      // Unanimity requires every currently eligible juror to have voted for
-      // the same living player; this also works with a single juror.
-      const unanimous = eligibleJurors.length > 0
-        && totalVotesCast === eligibleJurors.length
-        && votesByTarget.size === 1;
-      for (const [targetId, voteCount] of votesByTarget) {
-        if (unanimous || voteCount > totalVotesCast / 2 || voteCount >= 3) {
-          const recipient = game.players.find((p) => p.id === targetId);
-          if (recipient?.alive) recipient.ap += unanimous ? 2 : 1;
-        }
-      }
+      this.resolveJuryBallot(game);
       // Resolve stored votes once even if the room was offline for several days.
       const elapsedCycles = Math.floor((now - game.juryCycleEndsAt) / DAILY_AP_INTERVAL_MS) + 1;
       game.juryCycleEndsAt += elapsedCycles * DAILY_AP_INTERVAL_MS;
       game.juryVotes = {};
+      game.juryClosedEarly = false;
       changed = true;
     }
 
@@ -952,10 +969,17 @@ export class GameRoom {
       case "juryVote": {
         if (actor.alive) throw new Error("Only eliminated players can vote in the jury.");
         if (game.juryCycleEndsAt === null || now >= game.juryCycleEndsAt) throw new Error("The jury vote is closed. The next daily cycle is opening.");
+        if (game.juryClosedEarly) throw new Error("Every juror has voted. The ballot is complete until the next daily cycle.");
         if (game.juryVotes[actor.id]) throw new Error("You have already cast your jury vote this cycle.");
         const target = this.target(game, actor, action.targetId);
         if (!target.alive) throw new Error("The jury can only support a living player.");
         game.juryVotes[actor.id] = { targetId: target.id, invalidated: false };
+        const eligibleJurors = game.players.filter((player) => !player.alive);
+        if (eligibleJurors.length > 0 && eligibleJurors.every((juror) => !!game.juryVotes[juror.id])) {
+          // The last ballot resolves the result immediately. The next ballot
+          // remains unavailable until the normal daily cycle rolls over.
+          this.resolveJuryBallot(game, true);
+        }
         return;
       }
       default: throw new Error("Unknown action.");
@@ -963,7 +987,7 @@ export class GameRoom {
   }
 
   private startGame(game: GameState, now: number): void {
-    game.phase = "active"; game.startedAt = now; game.winnerId = null; game.endReason=null; game.juryCycleEndsAt = now + DAILY_AP_INTERVAL_MS; game.juryVotes = {};
+    game.phase = "active"; game.startedAt = now; game.winnerId = null; game.endReason=null; game.juryCycleEndsAt = now + DAILY_AP_INTERVAL_MS; game.juryVotes = {}; game.juryClosedEarly = false;
     const occupied = new Set<string>();
     const obstacleCount = Math.round(30 * (game.boardSize / BOARD_SIZE) ** 2);
     while (game.obstacles.length < obstacleCount) {
@@ -1043,7 +1067,7 @@ export class GameRoom {
       hostLastConnectedAt:host?.lastConnectedAt ?? null,
       eventLog:this.publicEventLog(game),
       players:game.players.map(({id,name,color,hp,x,y,alive,host})=>({id,name,color,hp,x,y,alive,host})),
-      jury:{memberCount:game.players.filter(p=>!p.alive).length,cycleEndsAt:game.juryCycleEndsAt},
+      jury:{memberCount:game.players.filter(p=>!p.alive).length,cycleEndsAt:game.juryCycleEndsAt,closed:!!game.juryClosedEarly},
       me:{id:player.id,ap:player.ap,nextApAt:player.nextApAt,range:player.range,notes:player.notes||"",
         killerName:!player.alive?(player.killedByName||null):null,isJuryMember:!player.alive,hasVoted:!!game.juryVotes[player.id],
         replayEvents:this.replayFor(player)},
