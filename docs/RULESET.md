@@ -24,7 +24,7 @@
 
 ## Other actions
 - Repair costs 3 AP for +1 HP, up to 3.
-- Range upgrade costs 3 AP for +1 range.
+- Range upgrade costs 2 AP for +1 range. The upgrade is private; other players do not see its range-change event.
 - Give a heart costs no AP; giver must keep 1 HP. An eliminated player revives with 1 HP.
 
 ## Private notes
@@ -37,9 +37,12 @@
 - On reconnect, each player receives only the unseen event list since the last disconnect.
 - Each step displays for 1.5 seconds and includes the local timestamp.
 - The replay does not expose attackers on non-lethal damage. A victim sees who eliminated them; other players only see the elimination.
-- Private AP, hidden ranges, notes, jury votes, and individual online status are not exposed through the replay.
+- Private AP, hidden ranges, notes, jury votes, and individual online status are not exposed through the normal replay. The host can separately export a private omniscient timeline.
 - The server holds up to 3,000 recent events for the current match.
 
 ## Presence and jury
 - The interface exposes only the aggregate online headcount; it never reveals which players are online.
-- Eliminated players can cast one secret jury ballot per daily cycle; 3+ valid votes award +1 AP.
+- The jury rules remain visible throughout an active match, including before anyone is eliminated.
+- Eliminated players can cast one secret ballot for a living player per daily cycle. With three or more eligible jurors, each living player who receives at least three valid votes earns exactly 1 AP; extra votes do not increase the reward.
+- With one or two eligible jurors, every juror must vote for the same living player for that player to earn 1 AP. A split ballot or incomplete vote earns nothing.
+- A ballot resolves when all eligible jurors have voted or at the daily deadline. Jury votes and rewards remain private in normal player views.

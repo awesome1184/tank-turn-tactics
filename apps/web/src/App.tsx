@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BatteryCharging, ChevronRight, Copy, Crosshair, Download, Heart, KeyRound, Move, RefreshCw, Shield, Skull, Swords, UserX, Users, Zap } from "lucide-react";
 import { MAP_SIZES, MAX_PLAYERS } from "../../../packages/shared/src/contracts";
-import type { NoteHistoryEntry, PlayerLabel, PublicGameState, PublicPlayer, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
+import type { NoteHistoryEntry, OmniscientMatchExport, PlayerLabel, PublicGameState, PublicPlayer, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
+import { createOmniscientGif } from "./omniscientGif";
 
 const API_BASE = (import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "https://tank-turn-tactics-api.awesome69421.workers.dev")).replace(/\/$/, "");
 const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
@@ -135,6 +136,7 @@ export default function App() {
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [resettingMatch, setResettingMatch] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState("");
   const turnstileContainerRef = useRef<HTMLDivElement | null>(null);
   const turnstileWidgetRef = useRef<string | null>(null);
@@ -406,6 +408,39 @@ export default function App() {
     anchor.href=url;anchor.download="tank-turn-tactics-match-records-"+new Date().toISOString().slice(0,10)+".json";
     anchor.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);
   };
+  const downloadFullMatchExport=async()=>{
+    if(!session||!game)return;
+    setExportBusy(true);
+    try{
+      const data=await api("/api/game/export",{playerId:session.playerId,token:session.token}) as OmniscientMatchExport;
+      const names=new Map(game.players.map(player=>[player.id,player.name] as const));
+      const allyEnemyLabels=Object.entries(labels)
+        .filter(([,label])=>label==="ally"||label==="enemy")
+        .map(([playerId,label])=>({playerId,playerName:names.get(playerId)||"Player no longer in roster",label}));
+      const completeExport={...data,exportedBy:session.name,allyEnemyLabels};
+      const blob=new Blob([JSON.stringify(completeExport,null,2)+"\n"],{type:"application/json;charset=utf-8"});
+      const url=URL.createObjectURL(blob);
+      const anchor=document.createElement("a");
+      anchor.href=url;anchor.download="tank-turn-tactics-omniscient-export-"+new Date().toISOString().slice(0,10)+".json";
+      anchor.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+      if(!data.timelineAvailable)setError("Export saved. This match began before private timeline recording, so historical AP and range changes are incomplete.");
+    }catch(e){setError(e instanceof Error?e.message:"Could not export the private match data.");}
+    finally{setExportBusy(false);}
+  };
+  const downloadOmniscientGif=async()=>{
+    if(!session||!game)return;
+    setExportBusy(true);
+    try{
+      const data=await api("/api/game/export",{playerId:session.playerId,token:session.token}) as OmniscientMatchExport;
+      const blob=await createOmniscientGif(data);
+      const url=URL.createObjectURL(blob);
+      const anchor=document.createElement("a");
+      anchor.href=url;anchor.download="tank-turn-tactics-omniscient-replay-"+new Date().toISOString().slice(0,10)+".gif";
+      anchor.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+      if(!data.timelineAvailable)setError("GIF saved with the current private stats. This match began before historical private timeline recording.");
+    }catch(e){setError(e instanceof Error?e.message:"Could not create the omniscient GIF.");}
+    finally{setExportBusy(false);}
+  };
   const editNotes=(value:string)=>{notesDraftRef.current=value;notesDirtyRef.current=value!==(game?.me.notes||"");setNotesDraft(value);};
   const skipReplay=()=>{
     if(replayEvents.length)send({type:"ackReplay",lastEventId:replayEvents[replayEvents.length-1].id});
@@ -572,22 +607,24 @@ export default function App() {
             {canAct ? <><div className="action-buttons">
                 <button disabled={!target || target.id === me?.id || !target.alive || game.me.ap < 1} onClick={() => target && send({ type: "attack", targetId: target.id })}><Swords/><span><b>Shoot</b><small>1 AP · 1 damage</small></span></button>
                 <button disabled={game.me.ap < 3 || (me?.hp || 3) >= 3} onClick={() => send({ type: "heal" })}><Heart/><span><b>Repair</b><small>3 AP · +1 HP</small></span></button>
-                <button disabled={game.me.ap < 3} onClick={() => send({ type: "upgradeRange" })}><Crosshair/><span><b>Upgrade range</b><small>3 AP · +1 tile</small></span></button>
+                <button disabled={game.me.ap < 2} onClick={() => send({ type: "upgradeRange" })}><Crosshair/><span><b>Upgrade range</b><small>2 AP · +1 tile · private</small></span></button>
                 <button disabled={!target || target.id === me?.id || !target.alive || game.me.ap < 1} onClick={() => target && send({ type: "giftAp", targetId: target.id, amount: 1 })}><Zap/><span><b>Gift 1 AP</b><small>Click to transfer</small></span></button>
                 <button className="action-wide" disabled={!target || target.id === me?.id || (me?.hp || 0) <= 1 || (!!target.alive && target.hp >= 3)} onClick={() => target && send({ type: "giftHp", targetId: target.id })}><Heart/><span><b>Give a heart</b><small>Free · can revive an eliminated player</small></span></button>
               </div>
             </> : <div className="eliminated-note"><Skull/> {game.phase === "ended" ? "This match has ended." : "You are eliminated. Another player can revive you with a heart gift."}</div>}
           </section>
-          {game.phase === "active" && game.jury.memberCount > 0 && <section className="panel jury-panel">
+          {game.phase === "active" && <section className="panel jury-panel">
             <div className="section-title"><div><div className="eyebrow">THE JURY</div><h2>Secret ballot</h2></div><span className="jury-count">{game.jury.memberCount} juror{game.jury.memberCount === 1 ? "" : "s"}</span></div>
-            <p className="jury-description">Eliminated players can secretly support one living tank each day. The ballot resolves as soon as every juror has voted, or at the daily deadline. A strict majority of votes cast or at least three votes for the same player awards +1 AP. If every juror votes for the same player, that player earns +2 AP instead, even with only one juror.</p>
+            <p className="jury-description">Eliminated players can secretly support one living tank each day. With three or more jurors, a living tank needs at least three votes to earn exactly 1 AP; additional votes do not increase the reward. With only one or two jurors, every juror must vote for the same tank or nobody earns AP. The ballot resolves when every juror has voted or at the daily deadline.</p>
             <div className="jury-deadline"><span>{game.jury.closed ? "Next ballot opens in" : "Ballot closes in"}</span><strong>{game.jury.cycleEndsAt ? duration(game.jury.cycleEndsAt - now) : "—"}</strong></div>
-            {game.jury.closed
-              ? <div className="jury-confirmation"><Shield size={16}/> All jurors have voted. The ballot is complete and any AP rewards have already been applied.</div>
-              : game.me.isJuryMember ? (game.me.hasVoted
-                ? <div className="jury-confirmation"><Shield size={16}/> Your vote is recorded and remains secret until the cycle resolves.</div>
-                : <div className="jury-vote-form"><label>CHOOSE A LIVING PLAYER<select value={effectiveJuryTarget} onChange={(e) => setJuryTarget(e.target.value)}>{juryCandidates.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><button className="jury-vote-button" disabled={!effectiveJuryTarget || connection !== "online"} onClick={() => send({ type: "juryVote", targetId: effectiveJuryTarget })}>Cast secret vote <ChevronRight size={16}/></button></div>
-              ) : <div className="jury-confirmation"><Skull size={16}/> Only eliminated players can cast a jury vote. Votes and AP balances are private.</div>}
+            {game.jury.memberCount === 0
+              ? <div className="jury-confirmation"><Shield size={16}/> No eliminated players are eligible to vote yet. The jury rules are active as soon as a player is eliminated.</div>
+              : game.jury.closed
+                ? <div className="jury-confirmation"><Shield size={16}/> All jurors have voted. The ballot is complete and any AP rewards have already been applied.</div>
+                : game.me.isJuryMember ? (game.me.hasVoted
+                  ? <div className="jury-confirmation"><Shield size={16}/> Your vote is recorded and remains secret until the cycle resolves.</div>
+                  : <div className="jury-vote-form"><label>CHOOSE A LIVING PLAYER<select value={effectiveJuryTarget} onChange={(e) => setJuryTarget(e.target.value)}>{juryCandidates.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><button className="jury-vote-button" disabled={!effectiveJuryTarget || connection !== "online"} onClick={() => send({ type: "juryVote", targetId: effectiveJuryTarget })}>Cast secret vote <ChevronRight size={16}/></button></div>
+                ) : <div className="jury-confirmation"><Skull size={16}/> Only eliminated players can cast a jury vote. Votes and AP balances are private.</div>}
           </section>}
           <section className="panel notes-panel"><div className="section-title"><div><div className="eyebrow">PERSONAL</div><h2>Private notes</h2></div><small>{notesDirtyRef.current?"Saving privately…":"Saved privately"}</small></div>
             <textarea value={notesDraft} maxLength={5000} rows={5} placeholder="Keep private notes about the match, players, plans, or observations…" onChange={e=>editNotes(e.target.value)} onBlur={()=>{if(notesDirtyRef.current&&socketRef.current?.readyState===WebSocket.OPEN)socketRef.current.send(JSON.stringify({type:"saveNotes",notes:notesDraftRef.current}));}}/>
@@ -601,7 +638,7 @@ export default function App() {
             <div className="event-log-list">{game.eventLog.length?game.eventLog.slice().reverse().slice(0,200).map(event=><article key={event.id}><time>{new Date(event.at).toLocaleString()}</time><p>{event.message}</p></article>):<small className="muted">No events yet.</small>}</div>
           </section>
           {(game.phase==="active"||game.phase==="ended")&&me?.host&&<section className="panel reset-match-panel"><div className="eyebrow">HOST CONTROL</div><h2>Restart match</h2><p>Return everyone in the current roster to the lobby without deleting player accounts or recovery keys. Names, colors, and private notes stay intact; battlefield progress, jury votes, notes history, and the public event log are reset.</p><button className="danger-button" disabled={resettingMatch || connection!=="online"} onClick={resetSharedMatch}><RefreshCw size={14}/>{resettingMatch?"Restarting…":"Return everyone to lobby"}</button></section>}
-          {(game.phase==="active"||game.phase==="ended")&&me?.host&&<section className="panel notes-archive"><div className="section-title"><div><div className="eyebrow">HOST RECORD</div><h2>Private notes history</h2></div></div><p>Hourly snapshots, saved only when a player’s notes differ from the previous backup. The latest saved notes are captured when you load the archive. Ally/enemy labels are private to this browser, so the export includes the labels saved here alongside the server-side notes history.</p><button className="secondary-button" onClick={loadNotesArchive} disabled={notesArchiveLoading}>{notesArchiveLoading?"Loading…":"Load notes history"}</button>{notesArchive&&<><button className="secondary-button" onClick={downloadNotesAndLabels}>Download notes + ally/enemy data</button><div className="notes-archive-list">{notesArchive.length?notesArchive.map(entry=><article key={entry.id}><div><b>{entry.playerName}</b><time>{new Date(entry.at).toLocaleString()}</time></div><pre>{entry.text||"(cleared notes)"}</pre></article>):<small>No notes were saved yet.</small>}</div></>}</section>}
+          {(game.phase==="active"||game.phase==="ended")&&me?.host&&<section className="panel notes-archive"><div className="section-title"><div><div className="eyebrow">HOST RECORD</div><h2>Private match export</h2></div></div><p>Host-only export of the full match record, including the private AP and range timeline, player health, secret jury ballots, and private notes history. The omniscient GIF shows every player’s health, AP, and firing range on each sampled frame.</p><div className="utility-actions"><button className="secondary-button" onClick={downloadFullMatchExport} disabled={exportBusy||connection!=="online"}>{exportBusy?"Preparing export…":"Download full match data (.json)"}</button><button className="secondary-button" onClick={downloadOmniscientGif} disabled={exportBusy||connection!=="online"}>{exportBusy?"Preparing export…":"Export omniscient POV (.gif)"}</button></div><button className="secondary-button" onClick={loadNotesArchive} disabled={notesArchiveLoading}>{notesArchiveLoading?"Loading…":"Load notes history"}</button>{notesArchive&&<><button className="secondary-button" onClick={downloadNotesAndLabels}>Download notes + ally/enemy data</button><div className="notes-archive-list">{notesArchive.length?notesArchive.map(entry=><article key={entry.id}><div><b>{entry.playerName}</b><time>{new Date(entry.at).toLocaleString()}</time></div><pre>{entry.text||"(cleared notes)"}</pre></article>):<small>No notes were saved yet.</small>}</div></>}</section>}
         </aside>
       </div>
       <p className="server-note"><Shield size={14}/> Server-authoritative match · AP and actions are validated by the game server.</p>

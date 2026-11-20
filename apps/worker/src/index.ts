@@ -2,7 +2,7 @@ import {
   BOARD_SIZE, MAP_SIZES, DAILY_AP_INTERVAL_MS, MAX_HP, MAX_PLAYERS,
   RANGE_UPGRADE_COST, STARTING_AP, STARTING_HP, STARTING_RANGE, chebyshevDistance,
 } from "../../../packages/shared/src/contracts";
-import type { ClientAction, GameState, MatchEvent, NoteHistoryEntry, Player, PublicEventLogEntry, PublicGameState, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
+import type { ClientAction, GameState, MatchEvent, NoteHistoryEntry, Player, PrivatePlayerSnapshot, PublicEventLogEntry, PublicGameState, PublicReplayEvent, ReplayMapSnapshot } from "../../../packages/shared/src/contracts";
 
 export interface Env { ROOMS: DurableObjectNamespace; TURNSTILE_SECRET_KEY?: string; }
 class RequestError extends Error {
@@ -73,7 +73,7 @@ const cors = (response: Response) => {
   return new Response(response.body, { status: response.status, headers });
 };
 const stubFor = (env: Env) => env.ROOMS.get(env.ROOMS.idFromName("shared-game-v1"));
-const GAME_SAVE_VERSION = 5;
+const GAME_SAVE_VERSION = 6;
 const MAX_NOTE_HISTORY_PER_PLAYER = 100;
 const NOTE_BACKUP_INTERVAL_MS = 60 * 60 * 1000;
 const NOTE_BACKUP_RETRY_MS = 5 * 60 * 1000;
@@ -132,6 +132,10 @@ export default {
       if (url.pathname === "/api/game/notes" && request.method === "POST") {
         const body = await readJsonBody<{ playerId?: string; token?: string }>(request);
         return cors(await stub.fetch("https://game.internal/notes", {method:"POST",body:JSON.stringify(body)}));
+      }
+      if (url.pathname === "/api/game/export" && request.method === "POST") {
+        const body = await readJsonBody<{ playerId?: string; token?: string }>(request);
+        return cors(await stub.fetch("https://game.internal/export", {method:"POST",body:JSON.stringify(body)}));
       }
       return cors(json({ error: "Not found." }, 404));
     } catch (error) {
@@ -195,6 +199,7 @@ export class GameRoom {
     if (path === "/join" && request.method === "POST") return this.join(request);
     if (path === "/recover" && request.method === "POST") return this.recover(request);
     if (path === "/notes" && request.method === "POST") return this.notesArchive(request);
+    if (path === "/export" && request.method === "POST") return this.matchExport(request);
     return json({ error: "Not found." }, 404);
   }
 
@@ -494,9 +499,18 @@ export class GameRoom {
     try { socket.send(JSON.stringify({ type: "error", message })); } catch { /* closed socket */ }
   }
 
+  private privateSnapshot(player: Player): PrivatePlayerSnapshot {
+    return {id:player.id,name:player.name,color:player.color,hp:player.hp,ap:player.ap,range:player.range,x:player.x,y:player.y,alive:player.alive,nextApAt:player.nextApAt};
+  }
+
   private recordEvent(game:GameState,type:MatchEvent["type"],actor:Player|null,target?:Player,extra:Partial<MatchEvent>={}):void {
     const id=game.nextEventId||1;
-    const event:MatchEvent={id,at:Date.now(),type,actorId:actor?.id??null,actorName:actor?.name??null,...(target?{targetId:target.id,targetName:target.name}:{}),...extra};
+    const changedPlayers=[actor,target].filter((player):player is Player=>!!player);
+    const privateChanges=Array.from(new Map(changedPlayers.map(player=>[player.id,player])).values()).map(player=>this.privateSnapshot(player));
+    const event:MatchEvent={id,at:Date.now(),type,actorId:actor?.id??null,actorName:actor?.name??null,
+      ...(target?{targetId:target.id,targetName:target.name}:{}),
+      ...(type==="match-start"?{privateInitialSnapshot:game.players.map(player=>this.privateSnapshot(player))}:{}),
+      ...(privateChanges.length?{privateChanges}:{}),...extra};
     game.nextEventId=id+1;
     game.events.push(event);
     if(game.events.length>3000){
@@ -509,8 +523,9 @@ export class GameRoom {
 
   private publicEventLog(game:GameState):PublicEventLogEntry[] {
     return game.events.slice(-500).flatMap(event=>{
-      // AP gifts are private transactions; never include them in the shared event log.
-      if(event.type==="gift-ap")return [];
+      // Private transactions and hidden player information are only exposed
+      // through the host-authorized omniscient export.
+      if(event.type==="gift-ap"||event.type==="range-upgrade"||event.type==="jury-vote"||event.type==="jury-award")return [];
       const actor=event.actorName||"A player", target=event.targetName||"A player";
       let message:string|null=null;
       switch(event.type){
@@ -644,6 +659,33 @@ export class GameRoom {
       }
       await this.state.storage.put(key,history);
     }
+  }
+
+  private async matchExport(request:Request):Promise<Response>{
+    const body=await request.json() as {playerId?:unknown;token?:unknown};
+    if(typeof body.playerId!=="string"||typeof body.token!=="string")return json({error:"Invalid session."},400);
+    const game=await this.getGame();
+    const actor=game?.players.find(player=>player.id===body.playerId&&player.token===body.token);
+    if(!game||!actor)return json({error:"Invalid session."},403);
+    if(!actor.host)return json({error:"Only the host can export omniscient match data."},403);
+    await this.backupNotesIfChanged(game,Date.now());
+    const histories=await Promise.all(game.players.map(player=>this.state.storage.get<NoteHistoryEntry[]>(this.noteHistoryKey(player.id))));
+    const privateNotesHistory=histories.flatMap(history=>history||[]).sort((a,b)=>a.at-b.at);
+    const startEvent=game.events.find(event=>event.type==="match-start");
+    const initialSnapshot=startEvent?.privateInitialSnapshot??game.players.map(player=>this.privateSnapshot(player));
+    const juryVotes=Object.entries(game.juryVotes).map(([voterId,vote])=>{
+      const voter=game.players.find(player=>player.id===voterId);
+      const target=game.players.find(player=>player.id===vote.targetId);
+      return {voterId,voterName:voter?.name||"Unknown player",targetId:vote.targetId,targetName:target?.name||"Unknown player",invalidated:vote.invalidated};
+    });
+    return json({
+      exportVersion:1,exportedAt:new Date().toISOString(),phase:game.phase,
+      startedAt:game.startedAt,boardSize:game.boardSize,obstacles:game.obstacles,
+      endReason:game.endReason||null,winnerId:game.winnerId,
+      timelineAvailable:!!startEvent?.privateInitialSnapshot,
+      roster:game.players.map(player=>this.privateSnapshot(player)),
+      initialSnapshot,timeline:game.events,juryVotes,privateNotesHistory,
+    });
   }
 
   private async notesArchive(request:Request):Promise<Response>{
@@ -791,16 +833,25 @@ export class GameRoom {
       totalVotesCast += 1;
     }
 
-    // A strict majority of ballots cast or at least three votes earns +1 AP.
-    // Unanimity requires every currently eligible juror to have voted for
-    // the same living player; this also works with a single juror.
-    const unanimous = eligibleJurors.length > 0
-      && totalVotesCast === eligibleJurors.length
-      && votesByTarget.size === 1;
-    for (const [targetId, voteCount] of votesByTarget) {
-      if (unanimous || voteCount > totalVotesCast / 2 || voteCount >= 3) {
-        const recipient = game.players.find((p) => p.id === targetId);
-        if (recipient?.alive) recipient.ap += unanimous ? 2 : 1;
+    // A jury of one or two must unanimously support one living player.
+    // Larger juries award exactly 1 AP to each player with at least three votes.
+    if (eligibleJurors.length > 0 && eligibleJurors.length <= 2) {
+      if (totalVotesCast === eligibleJurors.length && votesByTarget.size === 1) {
+        const targetId = votesByTarget.keys().next().value as string | undefined;
+        const recipient = targetId ? game.players.find((player) => player.id === targetId) : undefined;
+        if (recipient?.alive) {
+          recipient.ap += 1;
+          this.recordEvent(game,"jury-award",null,recipient,{amount:1});
+        }
+      }
+    } else if (eligibleJurors.length >= 3) {
+      for (const [targetId, voteCount] of votesByTarget) {
+        if (voteCount < 3) continue;
+        const recipient = game.players.find((player) => player.id === targetId);
+        if (recipient?.alive) {
+          recipient.ap += 1;
+          this.recordEvent(game,"jury-award",null,recipient,{amount:1});
+        }
       }
     }
 
@@ -984,6 +1035,7 @@ export class GameRoom {
         const target = this.target(game, actor, action.targetId);
         if (!target.alive) throw new Error("The jury can only support a living player.");
         game.juryVotes[actor.id] = { targetId: target.id, invalidated: false };
+        this.recordEvent(game,"jury-vote",actor,target);
         const eligibleJurors = game.players.filter((player) => !player.alive);
         if (eligibleJurors.length > 0 && eligibleJurors.every((juror) => !!game.juryVotes[juror.id])) {
           // The last ballot resolves the result immediately. The next ballot
