@@ -33,10 +33,10 @@ function eventLabel(event: MatchEvent): string {
 
 function buildFrames(data: OmniscientMatchExport): GifFrame[] {
   const initial = data.initialSnapshot?.length ? data.initialSnapshot : data.roster;
-  const players = new Map(initial.map(player => [player.id, { ...player }]));
+  const players = new Map<string, PrivatePlayerSnapshot>(initial.map(player => [player.id, { ...player }] as const));
   const frames: GifFrame[] = [{
-    at: data.startedAt ?? Date.parse(data.exportedAt),
-    label: data.timelineAvailable ? "Match start" : "Historical private timeline unavailable",
+    at: data.timelineAvailable ? (data.startedAt ?? Date.parse(data.exportedAt)) : Date.parse(data.exportedAt),
+    label: data.timelineAvailable ? "Match start" : "Current snapshot · historical private timeline unavailable",
     players: clonePlayers(Array.from(players.values())),
   }];
   if (!data.timelineAvailable) return frames;
@@ -296,7 +296,8 @@ export async function createOmniscientGif(data: OmniscientMatchExport): Promise<
   const rendered: Uint8Array[] = [];
   for (let index = 0; index < selectedFrames.length; index++) {
     rendered.push(drawFrame(canvas, selectedFrames[index], data.boardSize, data.obstacles || [], index, selectedFrames.length));
-    if (index % 4 === 3) await new Promise(resolve => window.setTimeout(resolve, 0));
+    if (index % 4 === 3) await new Promise<void>(resolve => window.setTimeout(resolve, 0));
   }
-  return new Blob([encodeGif(rendered, GIF_WIDTH, GIF_HEIGHT)], { type: "image/gif" });
+  const encoded = encodeGif(rendered, GIF_WIDTH, GIF_HEIGHT);
+  return new Blob([encoded.buffer as ArrayBuffer], { type: "image/gif" });
 }

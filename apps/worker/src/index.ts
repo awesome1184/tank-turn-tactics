@@ -506,7 +506,8 @@ export class GameRoom {
   private recordEvent(game:GameState,type:MatchEvent["type"],actor:Player|null,target?:Player,extra:Partial<MatchEvent>={}):void {
     const id=game.nextEventId||1;
     const changedPlayers=[actor,target].filter((player):player is Player=>!!player);
-    const privateChanges=Array.from(new Map(changedPlayers.map(player=>[player.id,player])).values()).map(player=>this.privateSnapshot(player));
+    const uniquePlayers=changedPlayers.filter((player,index)=>changedPlayers.findIndex(candidate=>candidate.id===player.id)===index);
+    const privateChanges=uniquePlayers.map(player=>this.privateSnapshot(player));
     const event:MatchEvent={id,at:Date.now(),type,actorId:actor?.id??null,actorName:actor?.name??null,
       ...(target?{targetId:target.id,targetName:target.name}:{}),
       ...(type==="match-start"?{privateInitialSnapshot:game.players.map(player=>this.privateSnapshot(player))}:{}),
